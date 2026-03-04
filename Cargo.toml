@@ -1,0 +1,74 @@
+[package]
+name = "construct-obfs4"
+version = "0.1.0"
+edition = "2024"
+description = "obfs4 pluggable transport implementation in Rust for Construct messenger"
+license = "MIT"
+repository = "https://github.com/maximeliseyev/construct-obfs4"
+keywords = ["obfs4", "pluggable-transport", "censorship-resistance", "tor"]
+
+[lib]
+name = "construct_obfs4"
+path = "src/lib.rs"
+
+# Integration test binary (against Go reference server)
+[[example]]
+name = "interop_server"
+path = "examples/interop_server.rs"
+
+[[example]]
+name = "interop_client"
+path = "examples/interop_client.rs"
+
+[[bench]]
+name = "framing"
+harness = false
+
+[dependencies]
+# Crypto
+curve25519-dalek = { version = "4.1", features = ["rand_core"] }
+crypto_box = "0.9"
+sha2 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+siphasher = "0.3"
+subtle = "2.5"
+zeroize = { version = "1.7", features = ["derive"] }
+rand_chacha = "0.3"
+rand = "0.8"
+chacha20poly1305 = "0.10"
+
+# Async I/O
+tokio = { version = "1", features = ["io-util", "net", "rt"] }
+bytes = "1.6"
+pin-project-lite = "0.2"
+
+# Error handling
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+hex = "0.4"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[features]
+default = []
+# Enable tonic/hyper transport wrappers (optional — pulls in heavy deps)
+tonic-transport = ["dep:hyper", "dep:http"]
+
+[dependencies.hyper]
+version = "1"
+features = ["client", "server"]
+optional = true
+
+[dependencies.http]
+version = "1"
+optional = true
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[profile.bench]
+opt-level = 3
+lto = true
