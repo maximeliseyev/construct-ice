@@ -19,8 +19,10 @@ pub type NodeId = [u8; 20];
 /// Static server identity keypair — loaded from config, long-lived.
 #[derive(ZeroizeOnDrop)]
 pub struct StaticKeypair {
+    /// Server's Curve25519 public key.
     #[zeroize(skip)]
     pub public: MontgomeryPoint,
+    /// Server's Curve25519 secret key (32 bytes).
     pub secret: [u8; 32],
     /// Server's Node ID (20 bytes) — distributed to clients out-of-band.
     #[zeroize(skip)]
@@ -31,10 +33,12 @@ pub struct StaticKeypair {
 /// Used in the handshake — the representative is sent on the wire.
 #[derive(ZeroizeOnDrop)]
 pub struct EphemeralKeypair {
+    /// Curve25519 public key (derived from representative, not scalar mult).
     #[zeroize(skip)]
     pub public: MontgomeryPoint,
+    /// Curve25519 secret key (32 bytes).
     pub secret: [u8; 32],
-    /// Always valid — guaranteed by construction.
+    /// Elligator2 representative — always valid, guaranteed by construction.
     #[zeroize(skip)]
     pub representative: [u8; 32],
 }

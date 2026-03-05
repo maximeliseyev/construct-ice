@@ -143,7 +143,7 @@ where
     // so try E-1, E, E+1
     let mac_verified = verify_mac_with_skew(
         &hmac_key,
-        &resp_buf[..mac_start + MARK_LEN], // Y' || AUTH || P_S || M_S
+        &resp_buf[..mac_start], // Y' || AUTH || P_S || M_S
         &received_mac,
     );
     if !mac_verified {

@@ -95,7 +95,7 @@ where
     // 5. Verify MAC_C with clock skew tolerance (E-1, E, E+1)
     let (mac_valid, epoch_str) = verify_mac_with_skew(
         &hmac_key,
-        &buf[..mac_start + MARK_LEN], // X' || P_C || M_C
+        &buf[..mac_start], // X' || P_C || M_C
         &received_mac,
     );
     if !mac_valid {

@@ -210,7 +210,7 @@ mod go_reference_tests {
     #[test]
     fn go_reference_dh_shared_secret() {
         let peer = hex_to_32(PEER_SECRET);
-        for (i, &(priv_hex, pub_hex, repr_hex, shared_hex)) in GO_VECTORS.iter().enumerate() {
+        for (i, &(_priv_hex, pub_hex, repr_hex, shared_hex)) in GO_VECTORS.iter().enumerate() {
             let expected_pub = hex_to_32(pub_hex);
             let expected_shared = hex_to_32(shared_hex);
             let repr = hex_to_32(repr_hex);
