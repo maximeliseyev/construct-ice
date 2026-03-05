@@ -16,12 +16,10 @@
 //! ### Client
 //! ```rust,no_run
 //! use construct_obfs4::{ClientConfig, Obfs4Stream};
-//! use tokio::net::TcpStream;
 //!
 //! # async fn example() -> Result<(), construct_obfs4::Error> {
-//! let tcp = TcpStream::connect("relay.example.com:443").await?;
-//! let config = ClientConfig::new(server_pubkey_b64);
-//! let stream = Obfs4Stream::client_handshake(tcp, config).await?;
+//! let config = ClientConfig::from_bridge_cert("base64_bridge_cert_here")?;
+//! let mut stream = Obfs4Stream::connect("relay.example.com:443", config).await?;
 //! // stream implements AsyncRead + AsyncWrite — pass to tonic/hyper
 //! # Ok(())
 //! # }
@@ -32,9 +30,11 @@
 //! use construct_obfs4::{ServerConfig, Obfs4Listener};
 //!
 //! # async fn example() -> Result<(), construct_obfs4::Error> {
-//! let listener = Obfs4Listener::bind("0.0.0.0:443", ServerConfig::generate()).await?;
+//! let config = ServerConfig::generate();
+//! let listener = Obfs4Listener::bind("0.0.0.0:443", config).await?;
 //! while let Ok((stream, addr)) = listener.accept().await {
-//!     tokio::spawn(handle(stream));
+//!     // stream implements AsyncRead + AsyncWrite
+//!     tokio::spawn(async move { /* handle(stream) */ });
 //! }
 //! # Ok(())
 //! # }

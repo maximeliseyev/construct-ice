@@ -3,3 +3,4 @@
 pub mod elligator2;
 pub mod kdf;
 pub mod keypair;
+pub mod ntor;

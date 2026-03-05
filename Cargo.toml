@@ -26,20 +26,20 @@ harness = false
 
 [dependencies]
 # Crypto
-curve25519-dalek = { version = "4.1", features = ["rand_core"] }
-crypto_box = "0.9"
+curve25519-elligator2 = { version = "0.1.0-alpha.2", features = ["elligator2", "rand_core"] }
 sha2 = "0.10"
 hmac = "0.12"
 hkdf = "0.12"
-siphasher = "0.3"
+siphasher = "1"
 subtle = "2.5"
 zeroize = { version = "1.7", features = ["derive"] }
 rand_chacha = "0.3"
 rand = "0.8"
-chacha20poly1305 = "0.10"
+crypto_secretbox = "0.1"
+base64 = "0.22"
 
 # Async I/O
-tokio = { version = "1", features = ["io-util", "net", "rt"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
 bytes = "1.6"
 pin-project-lite = "0.2"
 

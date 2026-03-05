@@ -2,29 +2,36 @@
 //!
 //! ## Wire format (server → client)
 //! ```text
-//! ServerHandshake = server_epk_repr[32] || MAC[16] || padding[0..8192]
+//! serverResponse = Y'[32] || AUTH[32] || P_S || M_S[16] || MAC_S[16]
 //! ```
 
 use hmac::{Hmac, Mac};
 use rand::{CryptoRng, RngCore};
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     Error, Result,
     crypto::{
+        elligator2,
         keypair::{EphemeralKeypair, StaticKeypair},
-        kdf::{SessionKeys, derive_mac_key},
+        kdf::SessionKeys,
+        ntor,
     },
-    handshake::{HANDSHAKE_MAC_LEN, MAX_HANDSHAKE_PADDING, REPR_LEN, HandshakeResult},
+    handshake::{
+        AUTH_LEN, MAC_LEN, MARK_LEN, MAX_HANDSHAKE_LENGTH,
+        REPR_LEN, SERVER_MAX_PAD, SERVER_MIN_PAD,
+        HandshakeResult,
+    },
 };
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// Perform the server side of the obfs4 handshake.
 ///
-/// Reads the client's message, verifies MAC, performs DH, responds with
-/// server's ephemeral key, derives session keys.
+/// Reads the client's message, verifies MAC, performs ntor DH,
+/// responds with server's ephemeral key + AUTH tag, derives session keys.
 pub(crate) async fn server_handshake<S, R>(
     mut stream: S,
     static_keypair: &StaticKeypair,
@@ -34,86 +41,161 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: RngCore + CryptoRng,
 {
-    // 1. Read client's Elligator2 representative
-    let mut client_repr = [0u8; REPR_LEN];
-    stream.read_exact(&mut client_repr).await?;
+    let hmac_key = static_keypair.identity_bytes();
 
-    // 2. Read padding (variable length) + MAC[16] at the end
-    //    obfs4 server reads until it finds valid MAC — reads up to MAX_HANDSHAKE_PADDING+16
-    let (padding_len, client_mac) = read_client_padding_and_mac(&mut stream, &static_keypair, &client_repr).await?;
-    let _ = (padding_len, client_mac); // used in MAC verify below
+    // 1. Read client message (up to MAX_HANDSHAKE_LENGTH)
+    let mut buf = vec![0u8; MAX_HANDSHAKE_LENGTH];
+    let mut buf_len = 0usize;
 
-    // 3. TODO: verify client MAC
-    //    mac_key = derive_mac_key(static_keypair.public)
-    //    expected = HMAC(mac_key, client_repr || epoch_hours)[0..16]
-    //    check client_mac == expected (constant-time)
+    // We need at least REPR_LEN bytes for X'
+    while buf_len < REPR_LEN {
+        let n = stream.read(&mut buf[buf_len..]).await?;
+        if n == 0 {
+            return Err(Error::UnexpectedEof);
+        }
+        buf_len += n;
+    }
 
-    // 4. Generate server ephemeral keypair
+    // Extract X' (first 32 bytes)
+    let client_repr: [u8; REPR_LEN] = buf[..REPR_LEN].try_into().unwrap();
+
+    // 2. Compute expected client mark: M_C = HMAC-SHA256-128(B||NODEID, X')
+    let expected_mark = hmac_128(&hmac_key, &client_repr);
+
+    // 3. Scan for M_C in the remaining data
+    let mark_pos = loop {
+        if let Some(pos) = find_mark(&buf[REPR_LEN..buf_len], &expected_mark) {
+            break REPR_LEN + pos;
+        }
+        if buf_len >= MAX_HANDSHAKE_LENGTH {
+            // Anti-probing: delay before dropping
+            random_delay(rng).await;
+            return Err(Error::HandshakeMacMismatch);
+        }
+        let n = stream.read(&mut buf[buf_len..]).await?;
+        if n == 0 {
+            random_delay(rng).await;
+            return Err(Error::HandshakeMacMismatch);
+        }
+        buf_len += n;
+    };
+
+    // 4. Read MAC_C which follows the mark
+    let mac_start = mark_pos + MARK_LEN;
+    while buf_len < mac_start + MAC_LEN {
+        let n = stream.read(&mut buf[buf_len..]).await?;
+        if n == 0 {
+            return Err(Error::UnexpectedEof);
+        }
+        buf_len += n;
+    }
+
+    let received_mac: [u8; MAC_LEN] = buf[mac_start..mac_start + MAC_LEN].try_into().unwrap();
+
+    // 5. Verify MAC_C with clock skew tolerance (E-1, E, E+1)
+    let (mac_valid, epoch_str) = verify_mac_with_skew(
+        &hmac_key,
+        &buf[..mac_start + MARK_LEN], // X' || P_C || M_C
+        &received_mac,
+    );
+    if !mac_valid {
+        random_delay(rng).await;
+        return Err(Error::HandshakeMacMismatch);
+    }
+
+    // 6. Decode X from X' (Elligator2 reverse map)
+    let client_point = elligator2::pubkey_from_representative(&client_repr);
+
+    // 7. Generate server ephemeral keypair Y, y
     let server_epk = EphemeralKeypair::generate(rng);
 
-    // 5. DH: x25519(server_epk.secret, elligator2::decode(client_repr))
-    // TODO: decode client_repr → client_point, then DH
-    let dh_output = [0u8; 32]; // placeholder
+    // 8. Complete ntor handshake (server side)
+    let ntor_result = ntor::server_ntor(static_keypair, &server_epk, &client_point);
 
-    // 6. Derive session keys
-    let session_keys = SessionKeys::derive(&dh_output, &client_repr, &server_epk.representative)?;
+    // 9. Derive session keys
+    let session_keys = SessionKeys::derive(&ntor_result.key_seed)?;
 
-    // 7. Build server MAC
-    let mac_key = derive_mac_key(static_keypair.public.as_bytes().try_into().unwrap_or(&[0u8; 32]));
-    let epoch_hours = epoch_hours_str();
-    let server_mac = compute_server_mac(&mac_key, &server_epk.representative, epoch_hours.as_bytes());
+    // 10. Build server response: Y' || AUTH || P_S || M_S || MAC_S
+    let server_mark = hmac_128(&hmac_key, &server_epk.representative);
 
-    // 8. Send: server_repr || server_mac || padding
-    let padding_len = (rng.next_u32() as usize) % MAX_HANDSHAKE_PADDING;
-    let mut padding = vec![0u8; padding_len];
+    let pad_range = SERVER_MAX_PAD - SERVER_MIN_PAD + 1;
+    let pad_len = SERVER_MIN_PAD + ((rng.next_u32() as usize) % pad_range);
+    let mut padding = vec![0u8; pad_len];
     rng.fill_bytes(&mut padding);
 
-    let mut response = Vec::with_capacity(REPR_LEN + HANDSHAKE_MAC_LEN + padding_len);
+    // MAC_S = HMAC-SHA256-128(B||NODEID, Y' || AUTH || P_S || M_S || E')
+    let server_mac = {
+        let mut h = HmacSha256::new_from_slice(&hmac_key).expect("hmac key ok");
+        h.update(&server_epk.representative);
+        h.update(&ntor_result.auth);
+        h.update(&padding);
+        h.update(&server_mark);
+        h.update(epoch_str.as_bytes());
+        truncate_128(h.finalize().into_bytes().as_slice())
+    };
+
+    let resp_len = REPR_LEN + AUTH_LEN + pad_len + MARK_LEN + MAC_LEN;
+    let mut response = Vec::with_capacity(resp_len);
     response.extend_from_slice(&server_epk.representative);
-    response.extend_from_slice(&server_mac);
+    response.extend_from_slice(&ntor_result.auth);
     response.extend_from_slice(&padding);
+    response.extend_from_slice(&server_mark);
+    response.extend_from_slice(&server_mac);
     stream.write_all(&response).await?;
+    stream.flush().await?;
 
     Ok((stream, HandshakeResult { session_keys }))
 }
 
-/// Read client's variable-length padding and extract trailing MAC[16].
-///
-/// obfs4 doesn't frame the handshake — the server reads until it finds
-/// a valid MAC. This is the "mark" mechanism from the spec.
-async fn read_client_padding_and_mac<S>(
-    stream: &mut S,
-    static_keypair: &StaticKeypair,
-    client_repr: &[u8; REPR_LEN],
-) -> Result<(usize, [u8; HANDSHAKE_MAC_LEN])>
-where
-    S: AsyncRead + Unpin,
-{
-    // TODO: Implement mark-based scanning
-    // The client embeds a "mark" = HMAC(key, repr)[0..16] somewhere in the message
-    // Server reads up to MAX_HANDSHAKE_PADDING+16 bytes, scanning for the mark
-    // Once found, the remaining bytes are discarded, MAC verified
-
-    // Placeholder: just read up to 8208 bytes
-    let mut buf = vec![0u8; MAX_HANDSHAKE_PADDING + HANDSHAKE_MAC_LEN];
-    let n = stream.read(&mut buf).await?;
-    if n < HANDSHAKE_MAC_LEN {
-        return Err(Error::HandshakeRejected);
-    }
-    let mac: [u8; HANDSHAKE_MAC_LEN] = buf[n - HANDSHAKE_MAC_LEN..n].try_into().unwrap();
-    Ok((n - HANDSHAKE_MAC_LEN, mac))
+/// Compute HMAC-SHA256-128 (truncated to 16 bytes).
+fn hmac_128(key: &[u8], msg: &[u8]) -> [u8; MARK_LEN] {
+    let mut mac = HmacSha256::new_from_slice(key).expect("hmac key ok");
+    mac.update(msg);
+    truncate_128(mac.finalize().into_bytes().as_slice())
 }
 
-fn compute_server_mac(key: &[u8; 32], repr: &[u8; REPR_LEN], epoch_hours: &[u8]) -> [u8; HANDSHAKE_MAC_LEN] {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC key ok");
-    mac.update(repr);
-    mac.update(epoch_hours);
-    let full = mac.finalize().into_bytes();
-    full[..HANDSHAKE_MAC_LEN].try_into().unwrap()
+fn truncate_128(full: &[u8]) -> [u8; 16] {
+    full[..16].try_into().unwrap()
 }
 
-fn epoch_hours_str() -> String {
+/// Scan `data` for the 16-byte `mark`, return offset if found.
+fn find_mark(data: &[u8], mark: &[u8; MARK_LEN]) -> Option<usize> {
+    data.windows(MARK_LEN)
+        .position(|w| w.ct_eq(mark).unwrap_u8() == 1)
+}
+
+/// Verify MAC with clock skew tolerance: try E-1, E, E+1.
+/// Returns (valid, epoch_string_that_matched).
+fn verify_mac_with_skew(
+    hmac_key: &[u8],
+    prefix: &[u8],
+    received_mac: &[u8; MAC_LEN],
+) -> (bool, String) {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    (secs / 3600).to_string()
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let epoch = secs / 3600;
+
+    for offset in [0i64, -1, 1] {
+        let e = ((epoch as i64) + offset) as u64;
+        let e_str = e.to_string();
+
+        let mut h = HmacSha256::new_from_slice(hmac_key).expect("hmac key ok");
+        h.update(prefix);
+        h.update(e_str.as_bytes());
+        let expected = truncate_128(h.finalize().into_bytes().as_slice());
+
+        if received_mac.ct_eq(&expected).unwrap_u8() == 1 {
+            return (true, e_str);
+        }
+    }
+    (false, String::new())
+}
+
+/// Anti-probing: sleep a random duration (0..5000ms) before closing connection.
+async fn random_delay<R: RngCore>(rng: &mut R) {
+    let ms = (rng.next_u32() % 5000) as u64;
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
 }

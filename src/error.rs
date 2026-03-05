@@ -16,6 +16,18 @@ pub enum Error {
     #[error("server rejected handshake")]
     HandshakeRejected,
 
+    #[error("ntor AUTH tag verification failed — possible MITM")]
+    NtorAuthMismatch,
+
+    #[error("clock skew too large between client and server")]
+    ClockSkew,
+
+    #[error("invalid node ID: {0}")]
+    InvalidNodeId(String),
+
+    #[error("invalid bridge line: {0}")]
+    InvalidBridgeLine(String),
+
     // ── Elligator2 ──────────────────────────────────────────────────────────
     #[error("point has no Elligator2 representative (retry required)")]
     NoElligatorRepresentative,

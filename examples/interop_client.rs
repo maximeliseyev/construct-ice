@@ -1,5 +1,5 @@
 //! Minimal obfs4 client for local interop testing.
-//! Usage: cargo run --example interop_client -- <addr> <server_pubkey_hex>
+//! Usage: cargo run --example interop_client -- <addr> <bridge_cert>
 
 use construct_obfs4::{ClientConfig, Obfs4Stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -7,10 +7,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:54321".to_string());
+    let cert = std::env::args().nth(2).unwrap_or_else(|| {
+        eprintln!("Usage: interop_client <addr> <bridge_cert_base64>");
+        std::process::exit(1);
+    });
     println!("Connecting to obfs4 server at {addr}...");
 
-    // TODO: parse server pubkey from args
-    let config = ClientConfig::new([0u8; 32]);
+    let config = ClientConfig::from_bridge_cert(&cert)?;
     let mut stream = Obfs4Stream::connect(&addr, config).await?;
 
     stream.write_all(b"hello from construct-obfs4").await?;

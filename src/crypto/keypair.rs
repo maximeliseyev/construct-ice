@@ -3,7 +3,7 @@
 //! Only ~50% of Curve25519 keys have an Elligator2 representative.
 //! This module handles the retry loop transparently.
 
-use curve25519_dalek::montgomery::MontgomeryPoint;
+use curve25519_elligator2::montgomery::MontgomeryPoint;
 use rand::{CryptoRng, RngCore};
 use zeroize::ZeroizeOnDrop;
 
@@ -13,16 +13,18 @@ use super::elligator2;
 /// In practice, succeeds within 2-3 attempts on average.
 const MAX_RETRIES: usize = 64;
 
+/// 20-byte server Node ID (part of obfs4 server identity alongside public key B).
+pub type NodeId = [u8; 20];
+
 /// Static server identity keypair — loaded from config, long-lived.
 #[derive(ZeroizeOnDrop)]
 pub struct StaticKeypair {
     #[zeroize(skip)]
     pub public: MontgomeryPoint,
     pub secret: [u8; 32],
-    /// Elligator2 representative of `public` (may be None if not representable).
-    /// Server static keys don't need to be representable.
+    /// Server's Node ID (20 bytes) — distributed to clients out-of-band.
     #[zeroize(skip)]
-    pub representative: Option<[u8; 32]>,
+    pub node_id: NodeId,
 }
 
 /// Ephemeral keypair guaranteed to have an Elligator2 representative.
@@ -32,7 +34,7 @@ pub struct EphemeralKeypair {
     #[zeroize(skip)]
     pub public: MontgomeryPoint,
     pub secret: [u8; 32],
-    /// Always `Some` — guaranteed by construction.
+    /// Always valid — guaranteed by construction.
     #[zeroize(skip)]
     pub representative: [u8; 32],
 }
@@ -43,24 +45,19 @@ impl EphemeralKeypair {
     /// Retries up to [`MAX_RETRIES`] times. Average: 2 attempts.
     ///
     /// # Panics
-    /// Panics if no representable key found after MAX_RETRIES (should be
-    /// astronomically unlikely — probability 2^-64).
+    /// Panics if no representable key found after MAX_RETRIES (probability ~2^-64).
     pub fn generate<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         for _ in 0..MAX_RETRIES {
             let mut secret = [0u8; 32];
             rng.fill_bytes(&mut secret);
 
-            // Clamp scalar per Curve25519 spec
-            secret[0] &= 248;
-            secret[31] &= 127;
-            secret[31] |= 64;
+            let tweak = elligator2::random_tweak(rng);
 
-            let public = curve25519_dalek::montgomery::MontgomeryPoint(
-                // TODO: replace with proper scalar mult once elligator2 is implemented
-                [0u8; 32],
-            );
-
-            if let Some(representative) = elligator2::encode(&public) {
+            if let Some(representative) = elligator2::representative_from_privkey_tweaked(&secret, tweak) {
+                // Derive public key from representative to guarantee it matches
+                // what peers will recover. The dirty scalar mult adds a low-order
+                // point that from_representative accounts for.
+                let public = elligator2::pubkey_from_representative(&representative);
                 return EphemeralKeypair {
                     public,
                     secret,
@@ -70,49 +67,109 @@ impl EphemeralKeypair {
         }
         panic!("Failed to generate Elligator2-representable keypair after {MAX_RETRIES} retries");
     }
+
+    /// Perform X25519 DH with a peer's public key.
+    pub fn diffie_hellman(&self, peer_public: &MontgomeryPoint) -> [u8; 32] {
+        peer_public.mul_clamped(self.secret).to_bytes()
+    }
 }
 
 impl StaticKeypair {
-    /// Generate a new static keypair (for server identity).
-    /// The representative may or may not be present.
+    /// Generate a new static keypair with a random Node ID (for server identity).
     pub fn generate<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let mut secret = [0u8; 32];
         rng.fill_bytes(&mut secret);
-        secret[0] &= 248;
-        secret[31] &= 127;
-        secret[31] |= 64;
+        let public = MontgomeryPoint::mul_base_clamped(secret);
 
-        let public = curve25519_dalek::montgomery::MontgomeryPoint([0u8; 32]); // TODO
-        let representative = elligator2::encode(&public);
+        let mut node_id = [0u8; 20];
+        rng.fill_bytes(&mut node_id);
 
-        StaticKeypair { public, secret, representative }
+        StaticKeypair { public, secret, node_id }
     }
 
-    /// Load keypair from raw secret bytes (e.g., from config file).
-    pub fn from_secret(secret: [u8; 32]) -> Self {
-        let public = curve25519_dalek::montgomery::MontgomeryPoint([0u8; 32]); // TODO
-        let representative = elligator2::encode(&public);
-        StaticKeypair { public, secret, representative }
+    /// Load keypair from raw secret bytes and node ID.
+    pub fn from_secret(secret: [u8; 32], node_id: NodeId) -> Self {
+        let public = MontgomeryPoint::mul_base_clamped(secret);
+        StaticKeypair { public, secret, node_id }
     }
 
-    /// Encode public key as base64 for use in server bridge line.
-    /// Format: `cert=<base64(public_key || node_id)>`
+    /// Perform X25519 DH with a peer's public key using the static secret.
+    pub fn diffie_hellman(&self, peer_public: &MontgomeryPoint) -> [u8; 32] {
+        peer_public.mul_clamped(self.secret).to_bytes()
+    }
+
+    /// The identity key material: `B || NODEID` (52 bytes).
+    /// Used as HMAC key in the handshake.
+    pub fn identity_bytes(&self) -> [u8; 52] {
+        let mut out = [0u8; 52];
+        out[..32].copy_from_slice(self.public.as_bytes());
+        out[32..].copy_from_slice(&self.node_id);
+        out
+    }
+
+    /// Encode the bridge line credential: base64(public_key || node_id).
     pub fn bridge_cert(&self) -> String {
-        use std::io::Write;
-        let mut cert = Vec::with_capacity(64);
+        use base64::Engine;
+        let mut cert = Vec::with_capacity(52);
         cert.extend_from_slice(self.public.as_bytes());
-        // node_id (20 bytes) TBD
-        cert.extend_from_slice(&[0u8; 20]);
-        base64_encode(&cert)
+        cert.extend_from_slice(&self.node_id);
+        base64::engine::general_purpose::STANDARD.encode(&cert)
+    }
+
+    /// Parse a bridge cert string back to public key + node ID.
+    pub fn parse_bridge_cert(cert: &str) -> crate::Result<([u8; 32], NodeId)> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(cert)
+            .map_err(|e| crate::Error::InvalidServerPublicKey(e.to_string()))?;
+        if bytes.len() != 52 {
+            return Err(crate::Error::InvalidServerPublicKey(
+                format!("expected 52 bytes, got {}", bytes.len()),
+            ));
+        }
+        let mut pubkey = [0u8; 32];
+        let mut node_id = [0u8; 20];
+        pubkey.copy_from_slice(&bytes[..32]);
+        node_id.copy_from_slice(&bytes[32..]);
+        Ok((pubkey, node_id))
     }
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    // Simple base64 without external dep in this file
-    // In practice use base64 crate
-    bytes.iter().fold(String::new(), |mut acc, b| {
-        let _ = write!(acc, "{:02x}", b);
-        acc
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn ephemeral_keypair_has_representative() {
+        let epk = EphemeralKeypair::generate(&mut OsRng);
+        // Decode the representative back to a point
+        let decoded = elligator2::pubkey_from_representative(&epk.representative);
+        assert_eq!(epk.public, decoded);
+    }
+
+    #[test]
+    fn static_keypair_roundtrip() {
+        let sk = StaticKeypair::generate(&mut OsRng);
+        let sk2 = StaticKeypair::from_secret(sk.secret, sk.node_id);
+        assert_eq!(sk.public, sk2.public);
+    }
+
+    #[test]
+    fn bridge_cert_roundtrip() {
+        let sk = StaticKeypair::generate(&mut OsRng);
+        let cert = sk.bridge_cert();
+        let (pubkey, node_id) = StaticKeypair::parse_bridge_cert(&cert).unwrap();
+        assert_eq!(pubkey, sk.public.to_bytes());
+        assert_eq!(node_id, sk.node_id);
+    }
+
+    #[test]
+    fn dh_agreement() {
+        let a = EphemeralKeypair::generate(&mut OsRng);
+        let b = EphemeralKeypair::generate(&mut OsRng);
+        let shared_ab = a.diffie_hellman(&b.public);
+        let shared_ba = b.diffie_hellman(&a.public);
+        assert_eq!(shared_ab, shared_ba);
+    }
 }
