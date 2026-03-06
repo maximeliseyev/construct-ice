@@ -5,18 +5,21 @@
 //! This means they're directly compatible with tonic and hyper.
 
 use std::{
+    collections::VecDeque,
     io,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
+    time::Duration,
 };
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use pin_project_lite::pin_project;
-use rand::rngs::OsRng;
+use rand::{rngs::SmallRng, SeedableRng};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
+    time::Sleep,
 };
 
 use crate::{
@@ -27,6 +30,7 @@ use crate::{
         encoder::FrameEncoder,
     },
     handshake::{client::client_handshake, server::server_handshake},
+    iat::{IatMode, sample_delay, split_for_iat},
     replay_filter::ReplayFilter,
 };
 
@@ -38,18 +42,46 @@ pub struct ClientConfig {
     pub server_pubkey: [u8; 32],
     /// Server's Node ID (20 bytes, from bridge cert).
     pub node_id: NodeId,
+    /// IAT obfuscation mode (default: `None`).
+    pub iat_mode: IatMode,
 }
 
 impl ClientConfig {
-    /// Create config from a base64-encoded bridge cert (pubkey || node_id).
+    /// Create config from a base64-encoded bridge cert (`nodeID || pubKey`, no padding).
+    /// Sets `iat_mode = IatMode::None`.
     pub fn from_bridge_cert(cert: &str) -> Result<Self> {
         let (server_pubkey, node_id) = StaticKeypair::parse_bridge_cert(cert)?;
-        Ok(ClientConfig { server_pubkey, node_id })
+        Ok(ClientConfig { server_pubkey, node_id, iat_mode: IatMode::None })
+    }
+
+    /// Parse config from a bridge line fragment: `cert=<cert> iat-mode=<n>`.
+    ///
+    /// The fragment may optionally contain other space-separated `key=value` pairs.
+    /// Example: `"cert=AAECBAUGBwgJCgsMDQ4P... iat-mode=1"`
+    pub fn from_bridge_line(line: &str) -> Result<Self> {
+        let mut cert = None;
+        let mut iat_mode = IatMode::None;
+        for token in line.split_whitespace() {
+            if let Some(v) = token.strip_prefix("cert=") {
+                cert = Some(v);
+            } else if let Some(v) = token.strip_prefix("iat-mode=") {
+                iat_mode = v.parse()?;
+            }
+        }
+        let cert = cert.ok_or_else(|| crate::Error::InvalidBridgeLine("missing cert in bridge line".into()))?;
+        let (server_pubkey, node_id) = StaticKeypair::parse_bridge_cert(cert)?;
+        Ok(ClientConfig { server_pubkey, node_id, iat_mode })
     }
 
     /// Create config directly from raw bytes.
     pub fn new(server_pubkey: [u8; 32], node_id: NodeId) -> Self {
-        ClientConfig { server_pubkey, node_id }
+        ClientConfig { server_pubkey, node_id, iat_mode: IatMode::None }
+    }
+
+    /// Create config with explicit IAT mode.
+    pub fn with_iat(mut self, iat_mode: IatMode) -> Self {
+        self.iat_mode = iat_mode;
+        self
     }
 }
 
@@ -58,24 +90,40 @@ impl ClientConfig {
 /// Configuration for the obfs4 server.
 pub struct ServerConfig {
     pub(crate) keypair: StaticKeypair,
+    /// IAT obfuscation mode advertised in bridge lines (default: `None`).
+    pub iat_mode: IatMode,
 }
 
 impl ServerConfig {
-    /// Generate a new random server identity keypair.
+    /// Generate a new random server identity keypair with `IatMode::None`.
     pub fn generate() -> Self {
         ServerConfig {
-            keypair: StaticKeypair::generate(&mut OsRng),
+            keypair: StaticKeypair::generate(&mut rand::rngs::OsRng),
+            iat_mode: IatMode::None,
         }
     }
 
     /// Create from an existing static keypair.
     pub fn from_keypair(keypair: StaticKeypair) -> Self {
-        ServerConfig { keypair }
+        ServerConfig { keypair, iat_mode: IatMode::None }
     }
 
-    /// Return the server's bridge cert (base64-encoded pubkey || node_id).
+    /// Set the IAT mode.
+    pub fn with_iat(mut self, iat_mode: IatMode) -> Self {
+        self.iat_mode = iat_mode;
+        self
+    }
+
+    /// Return the server's bridge cert (base64-encoded `nodeID || pubKey`, no padding).
     pub fn bridge_cert(&self) -> String {
         self.keypair.bridge_cert()
+    }
+
+    /// Return a bridge line fragment: `cert=<cert> iat-mode=<n>`.
+    ///
+    /// Clients pass this to [`ClientConfig::from_bridge_line`].
+    pub fn bridge_line(&self) -> String {
+        format!("cert={} iat-mode={}", self.keypair.bridge_cert(), self.iat_mode.as_u8())
     }
 }
 
@@ -84,9 +132,15 @@ impl ServerConfig {
 pin_project! {
     /// An obfs4-wrapped stream implementing `AsyncRead + AsyncWrite`.
     ///
-    /// Obtained by calling [`Obfs4Stream::client_handshake`] or from
-    /// [`Obfs4Listener::accept`]. Compatible with tonic and hyper as a
-    /// custom transport.
+    /// Obtained by calling [`Obfs4Stream::connect`] / [`Obfs4Stream::client_handshake`]
+    /// or from [`Obfs4Listener::accept`].
+    ///
+    /// # IAT mode
+    ///
+    /// When `iat_mode` is `Enabled` or `Paranoid`, writes are split into chunks
+    /// with random inter-chunk delays (0–10 ms) to resist traffic-timing analysis.
+    /// The delays are applied during [`AsyncWrite::poll_flush`]; callers that
+    /// always flush (e.g. tonic, hyper) get IAT behaviour automatically.
     pub struct Obfs4Stream {
         #[pin]
         inner: TcpStream,
@@ -94,6 +148,10 @@ pin_project! {
         decoder: FrameDecoder,
         read_buf: BytesMut,
         write_buf: BytesMut,
+        iat_mode: IatMode,
+        iat_chunks: VecDeque<Bytes>,
+        iat_sleep: Option<Pin<Box<Sleep>>>,
+        iat_rng: SmallRng,
     }
 }
 
@@ -106,17 +164,17 @@ impl Obfs4Stream {
 
     /// Perform client handshake over an existing TCP stream.
     pub async fn client_handshake(tcp: TcpStream, config: ClientConfig) -> Result<Self> {
+        let iat_mode = config.iat_mode;
         let (tcp, result) = client_handshake(
             tcp,
             &config.server_pubkey,
             &config.node_id,
-            &mut OsRng,
+            &mut rand::rngs::OsRng,
         ).await?;
         let keys = result.session_keys;
 
         Ok(Obfs4Stream {
             inner: tcp,
-            // Client writes with C→S keys, reads with S→C keys
             encoder: FrameEncoder::new(
                 &keys.c2s_key,
                 &keys.c2s_nonce_prefix,
@@ -131,6 +189,10 @@ impl Obfs4Stream {
             ),
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
+            iat_mode,
+            iat_chunks: VecDeque::new(),
+            iat_sleep: None,
+            iat_rng: SmallRng::from_entropy(),
         })
     }
 }
@@ -164,7 +226,6 @@ impl AsyncRead for Obfs4Stream {
 
                 this.decoder.feed(filled);
 
-                // Decode frames into read_buf
                 loop {
                     match this.decoder.decode_frame() {
                         Ok(Some(DecodedFrame::Payload(payload))) => {
@@ -184,7 +245,6 @@ impl AsyncRead for Obfs4Stream {
                     }
                 }
 
-                // Return decoded data
                 let n = buf.remaining().min(this.read_buf.len());
                 if n > 0 {
                     buf.put_slice(&this.read_buf.split_to(n));
@@ -203,7 +263,7 @@ impl AsyncWrite for Obfs4Stream {
     ) -> Poll<io::Result<usize>> {
         let mut this = self.project();
 
-        // Encode data into frames
+        // Encode data into framed bytes
         let mut framed = BytesMut::new();
         if let Err(e) = this.encoder.encode(data, &mut framed) {
             return Poll::Ready(Err(io::Error::new(
@@ -212,19 +272,23 @@ impl AsyncWrite for Obfs4Stream {
             )));
         }
 
-        // Append to write buffer
-        this.write_buf.extend_from_slice(&framed);
-
-        // Try to flush as much as possible
-        while !this.write_buf.is_empty() {
-            let pinned = this.inner.as_mut();
-            match pinned.poll_write(cx, this.write_buf) {
-                Poll::Ready(Ok(n)) => {
-                    let _ = this.write_buf.split_to(n);
+        if *this.iat_mode == IatMode::None {
+            // ── IatMode::None: existing behaviour — buffer then flush immediately ──
+            this.write_buf.extend_from_slice(&framed);
+            while !this.write_buf.is_empty() {
+                let pinned = this.inner.as_mut();
+                match pinned.poll_write(cx, this.write_buf) {
+                    Poll::Ready(Ok(n)) => {
+                        let _ = this.write_buf.split_to(n);
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => break,
                 }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => break,
             }
+        } else {
+            // ── IatMode::Enabled / Paranoid: split into chunks, flush drives IAT ──
+            let chunks = split_for_iat(&framed, *this.iat_mode, this.iat_rng);
+            this.iat_chunks.extend(chunks);
         }
 
         Poll::Ready(Ok(data.len()))
@@ -233,15 +297,53 @@ impl AsyncWrite for Obfs4Stream {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let mut this = self.project();
 
-        // Flush remaining write buffer
-        while !this.write_buf.is_empty() {
-            let pinned = this.inner.as_mut();
-            match pinned.poll_write(cx, this.write_buf) {
-                Poll::Ready(Ok(n)) => {
-                    let _ = this.write_buf.split_to(n);
+        if *this.iat_mode != IatMode::None {
+            // ── Drain IAT chunks with inter-chunk delays ──────────────────────
+            loop {
+                // Wait for any in-progress inter-chunk sleep.
+                if let Some(sleep) = this.iat_sleep {
+                    match sleep.as_mut().poll(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(()) => *this.iat_sleep = None,
+                    }
                 }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
+
+                // Write the front chunk (if any).
+                if this.iat_chunks.is_empty() {
+                    break;
+                }
+
+                // Read chunk data without holding a mutable borrow during poll_write.
+                let chunk_bytes: Bytes = this.iat_chunks.front().unwrap().clone();
+                let pinned = this.inner.as_mut();
+                match pinned.poll_write(cx, &chunk_bytes) {
+                    Poll::Ready(Ok(n)) if n >= chunk_bytes.len() => {
+                        this.iat_chunks.pop_front();
+                        // Schedule delay before the next chunk.
+                        if !this.iat_chunks.is_empty() {
+                            let delay: Duration = sample_delay(this.iat_rng);
+                            *this.iat_sleep = Some(Box::pin(tokio::time::sleep(delay)));
+                        }
+                    }
+                    Poll::Ready(Ok(n)) => {
+                        // Partial write: advance the front chunk.
+                        *this.iat_chunks.front_mut().unwrap() = chunk_bytes.slice(n..);
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        } else {
+            // ── IatMode::None: flush write_buf ────────────────────────────────
+            while !this.write_buf.is_empty() {
+                let pinned = this.inner.as_mut();
+                match pinned.poll_write(cx, this.write_buf) {
+                    Poll::Ready(Ok(n)) => {
+                        let _ = this.write_buf.split_to(n);
+                    }
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
             }
         }
 
@@ -282,14 +384,13 @@ impl Obfs4Listener {
         let (tcp, result) = server_handshake(
             tcp,
             &self.config.keypair,
-            &mut OsRng,
+            &mut rand::rngs::OsRng,
             &self.replay_filter,
         ).await?;
         let keys = result.session_keys;
 
         let stream = Obfs4Stream {
             inner: tcp,
-            // Server writes with S→C keys, reads with C→S keys
             encoder: FrameEncoder::new(
                 &keys.s2c_key,
                 &keys.s2c_nonce_prefix,
@@ -304,6 +405,10 @@ impl Obfs4Listener {
             ),
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
+            iat_mode: self.config.iat_mode,
+            iat_chunks: VecDeque::new(),
+            iat_sleep: None,
+            iat_rng: SmallRng::from_entropy(),
         };
 
         Ok((stream, addr))

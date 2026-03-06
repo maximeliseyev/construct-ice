@@ -180,3 +180,71 @@ async fn independent_sessions_different_keys() {
 
     server_handle.await.unwrap();
 }
+
+/// IAT mode integration tests — round-trip with Enabled and Paranoid modes.
+#[tokio::test(flavor = "multi_thread")]
+async fn iat_mode_enabled_round_trip() {
+    use construct_ice::IatMode;
+    iat_round_trip(IatMode::Enabled).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn iat_mode_paranoid_round_trip() {
+    use construct_ice::IatMode;
+    iat_round_trip(IatMode::Paranoid).await;
+}
+
+async fn iat_round_trip(iat_mode: construct_ice::IatMode) {
+    let port = free_port().await;
+    let addr = format!("127.0.0.1:{port}");
+
+    let server_config = ServerConfig::generate().with_iat(iat_mode);
+    let bridge_line = server_config.bridge_line();
+    let listener = Obfs4Listener::bind(&addr, server_config).await.unwrap();
+
+    let addr_clone = addr.clone();
+    let server_handle = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 5];
+        stream.read_exact(&mut buf).await.unwrap();
+        stream.write_all(&buf).await.unwrap();
+        stream.flush().await.unwrap();
+        stream.shutdown().await.unwrap();
+    });
+
+    let config = ClientConfig::from_bridge_line(&bridge_line).unwrap();
+    // Verify IAT mode is parsed correctly from bridge line
+    assert_eq!(config.iat_mode, iat_mode);
+
+    let mut client = Obfs4Stream::connect(&addr_clone, config).await.unwrap();
+    client.write_all(b"hello").await.unwrap();
+    client.flush().await.unwrap();
+
+    let mut response = [0u8; 5];
+    client.read_exact(&mut response).await.unwrap();
+    assert_eq!(&response, b"hello");
+
+    server_handle.await.unwrap();
+}
+
+/// Bridge line round-trip: ServerConfig::bridge_line → ClientConfig::from_bridge_line.
+#[test]
+fn bridge_line_roundtrip() {
+    use construct_ice::IatMode;
+
+    for &mode in &[IatMode::None, IatMode::Enabled, IatMode::Paranoid] {
+        let server = ServerConfig::generate().with_iat(mode);
+        let line = server.bridge_line();
+        assert!(line.contains("cert="), "missing cert in bridge line");
+        assert!(line.contains(&format!("iat-mode={}", mode.as_u8())));
+
+        let client = ClientConfig::from_bridge_line(&line).unwrap();
+        assert_eq!(client.iat_mode, mode);
+
+        // Verify cert encodes the same key: parse the cert back and compare
+        let cert = server.bridge_cert();
+        let client2 = ClientConfig::from_bridge_cert(&cert).unwrap();
+        assert_eq!(client.server_pubkey, client2.server_pubkey);
+        assert_eq!(client.node_id, client2.node_id);
+    }
+}

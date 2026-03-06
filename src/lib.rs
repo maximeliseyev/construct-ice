@@ -46,12 +46,14 @@
 pub mod crypto;
 pub mod framing;
 pub mod handshake;
+pub mod iat;
 pub mod replay_filter;
 pub mod transport;
 
 mod error;
 
 pub use error::Error;
+pub use iat::IatMode;
 pub use transport::{ClientConfig, Obfs4Listener, Obfs4Stream, ServerConfig};
 
 /// Result type for this crate.
