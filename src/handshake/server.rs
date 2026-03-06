@@ -24,18 +24,21 @@ use crate::{
         REPR_LEN, SERVER_MAX_PAD, SERVER_MIN_PAD,
         HandshakeResult,
     },
+    replay_filter::ReplayFilter,
 };
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// Perform the server side of the obfs4 handshake.
 ///
-/// Reads the client's message, verifies MAC, performs ntor DH,
-/// responds with server's ephemeral key + AUTH tag, derives session keys.
+/// Reads the client's message, verifies MAC, checks replay filter,
+/// performs ntor DH, responds with server's ephemeral key + AUTH tag,
+/// derives session keys.
 pub(crate) async fn server_handshake<S, R>(
     mut stream: S,
     static_keypair: &StaticKeypair,
     rng: &mut R,
+    replay_filter: &std::sync::Mutex<ReplayFilter>,
 ) -> Result<(S, HandshakeResult)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -99,6 +102,17 @@ where
         &received_mac,
     );
     if !mac_valid {
+        random_delay(rng).await;
+        return Err(Error::HandshakeMacMismatch);
+    }
+
+    // 5b. Replay check — reject replayed handshakes (active probing defence).
+    // Guard must be dropped before any .await — extract the bool first.
+    let is_replay = {
+        let mut filter = replay_filter.lock().expect("replay filter mutex poisoned");
+        filter.test_and_set(received_mac)
+    };
+    if is_replay {
         random_delay(rng).await;
         return Err(Error::HandshakeMacMismatch);
     }

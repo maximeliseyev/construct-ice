@@ -7,6 +7,7 @@
 use std::{
     io,
     pin::Pin,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
@@ -26,6 +27,7 @@ use crate::{
         encoder::FrameEncoder,
     },
     handshake::{client::client_handshake, server::server_handshake},
+    replay_filter::ReplayFilter,
 };
 
 // ── Client config ────────────────────────────────────────────────────────────
@@ -257,21 +259,32 @@ impl AsyncWrite for Obfs4Stream {
 pub struct Obfs4Listener {
     inner: TcpListener,
     config: ServerConfig,
+    replay_filter: Arc<Mutex<ReplayFilter>>,
 }
 
 impl Obfs4Listener {
     /// Bind to an address and start accepting obfs4 connections.
     pub async fn bind(addr: &str, config: ServerConfig) -> Result<Self> {
         let inner = TcpListener::bind(addr).await?;
-        Ok(Obfs4Listener { inner, config })
+        Ok(Obfs4Listener {
+            inner,
+            config,
+            replay_filter: Arc::new(Mutex::new(ReplayFilter::new())),
+        })
     }
 
     /// Accept the next incoming obfs4 connection.
     ///
-    /// Performs TCP accept + obfs4 server handshake.
+    /// Performs TCP accept + obfs4 server handshake. Replayed handshakes
+    /// (active probing defence) are silently rejected with a random delay.
     pub async fn accept(&self) -> Result<(Obfs4Stream, std::net::SocketAddr)> {
         let (tcp, addr) = self.inner.accept().await?;
-        let (tcp, result) = server_handshake(tcp, &self.config.keypair, &mut OsRng).await?;
+        let (tcp, result) = server_handshake(
+            tcp,
+            &self.config.keypair,
+            &mut OsRng,
+            &self.replay_filter,
+        ).await?;
         let keys = result.session_keys;
 
         let stream = Obfs4Stream {

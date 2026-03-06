@@ -86,9 +86,3 @@ cargo test --test e2e
 - [Elligator2 paper](https://elligator.cr.yp.to/elligator-20130828.pdf)
 - [Go reference implementation](https://gitlab.com/yawning/obfs4)
 - [curve25519-elligator2](https://docs.rs/curve25519-elligator2)
-
-## Integration with construct-server
-
-```toml
-construct-obfs4 = { git = "https://github.com/maximeliseyev/construct-obfs4" }
-```

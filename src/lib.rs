@@ -46,6 +46,7 @@
 pub mod crypto;
 pub mod framing;
 pub mod handshake;
+pub mod replay_filter;
 pub mod transport;
 
 mod error;

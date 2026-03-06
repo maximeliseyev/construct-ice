@@ -48,9 +48,12 @@ pub fn random_tweak<R: RngCore + CryptoRng>(rng: &mut R) -> u8 {
 /// This is the inverse of the representative computation: given a representative
 /// produced from a private key, it recovers the corresponding public key.
 pub fn pubkey_from_representative(representative: &[u8; 32]) -> MontgomeryPoint {
-    // from_representative is the exact inverse of representative_from_privkey.
+    // from_representative::<Randomized> masks the top 2 bits before decoding,
+    // so it succeeds for any 32-byte input and must never return None.
+    // The old fallback to map_to_point was dead code but dangerous: if it ever
+    // triggered it would return a completely different point, silently breaking DH.
     MontgomeryPoint::from_representative::<Randomized>(representative)
-        .unwrap_or_else(|| MontgomeryPoint::map_to_point(representative))
+        .expect("Elligator2 Randomized decode always succeeds for any 32-byte input")
 }
 
 #[cfg(test)]
