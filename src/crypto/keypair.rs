@@ -111,30 +111,51 @@ impl StaticKeypair {
         out
     }
 
-    /// Encode the bridge line credential: base64(public_key || node_id).
+    /// Encode the bridge credential in Go obfs4proxy-compatible format.
+    ///
+    /// Format: `base64(nodeID[20] || pubKey[32])` with trailing `==` stripped.
+    /// This matches the `cert=` field in a standard obfs4 bridge line:
+    /// `Bridge obfs4 <IP>:<port> <fingerprint> cert=<this>,iat-mode=0`
+    ///
+    /// Note: the HMAC key used in the handshake (`identity_bytes()`) uses
+    /// `pubKey || nodeID` order — that is a separate, internal value.
     pub fn bridge_cert(&self) -> String {
         use base64::Engine;
-        let mut cert = Vec::with_capacity(52);
-        cert.extend_from_slice(self.public.as_bytes());
-        cert.extend_from_slice(&self.node_id);
-        base64::engine::general_purpose::STANDARD.encode(&cert)
+        let mut raw = Vec::with_capacity(52);
+        raw.extend_from_slice(&self.node_id);      // nodeID first — Go order
+        raw.extend_from_slice(self.public.as_bytes());
+        // Strip trailing '=' padding to match Go's certSuffix trimming
+        base64::engine::general_purpose::STANDARD
+            .encode(&raw)
+            .trim_end_matches('=')
+            .to_owned()
     }
 
-    /// Parse a bridge cert string back to public key + node ID.
+    /// Parse a bridge cert string back to (public key, node ID).
+    ///
+    /// Accepts both padded (`==`) and unpadded (Go-style) base64.
+    /// Format: `base64(nodeID[20] || pubKey[32])`.
     pub fn parse_bridge_cert(cert: &str) -> crate::Result<([u8; 32], NodeId)> {
         use base64::Engine;
+        // Re-add padding if stripped (Go style: always 52 bytes → trailing "==")
+        let padded = match cert.len() % 4 {
+            2 => format!("{cert}=="),
+            3 => format!("{cert}="),
+            _ => cert.to_owned(),
+        };
         let bytes = base64::engine::general_purpose::STANDARD
-            .decode(cert)
+            .decode(&padded)
             .map_err(|e| crate::Error::InvalidServerPublicKey(e.to_string()))?;
         if bytes.len() != 52 {
             return Err(crate::Error::InvalidServerPublicKey(
                 format!("expected 52 bytes, got {}", bytes.len()),
             ));
         }
-        let mut pubkey = [0u8; 32];
+        // nodeID first (bytes 0..20), then pubKey (bytes 20..52)
         let mut node_id = [0u8; 20];
-        pubkey.copy_from_slice(&bytes[..32]);
-        node_id.copy_from_slice(&bytes[32..]);
+        let mut pubkey = [0u8; 32];
+        node_id.copy_from_slice(&bytes[..20]);
+        pubkey.copy_from_slice(&bytes[20..]);
         Ok((pubkey, node_id))
     }
 }
@@ -163,9 +184,28 @@ mod tests {
     fn bridge_cert_roundtrip() {
         let sk = StaticKeypair::generate(&mut OsRng);
         let cert = sk.bridge_cert();
+
+        // Go-compatible: no trailing '='
+        assert!(!cert.ends_with('='), "cert should not have padding");
+        // 52 bytes → 70 base64 chars (without padding)
+        assert_eq!(cert.len(), 70, "cert length should be 70 (Go-compatible)");
+
         let (pubkey, node_id) = StaticKeypair::parse_bridge_cert(&cert).unwrap();
         assert_eq!(pubkey, sk.public.to_bytes());
         assert_eq!(node_id, sk.node_id);
+    }
+
+    #[test]
+    fn bridge_cert_accepts_padded_and_unpadded() {
+        let sk = StaticKeypair::generate(&mut OsRng);
+        let cert_no_pad = sk.bridge_cert();
+        let cert_padded = format!("{cert_no_pad}==");
+
+        // Both forms should parse correctly
+        let (pub1, id1) = StaticKeypair::parse_bridge_cert(&cert_no_pad).unwrap();
+        let (pub2, id2) = StaticKeypair::parse_bridge_cert(&cert_padded).unwrap();
+        assert_eq!(pub1, pub2);
+        assert_eq!(id1, id2);
     }
 
     #[test]
