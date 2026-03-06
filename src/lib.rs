@@ -1,4 +1,4 @@
-//! # construct-obfs4
+//! # construct-ice
 //!
 //! obfs4 pluggable transport implementation in Rust.
 //!
@@ -15,9 +15,9 @@
 //!
 //! ### Client
 //! ```rust,no_run
-//! use construct_obfs4::{ClientConfig, Obfs4Stream};
+//! use construct_ice::{ClientConfig, Obfs4Stream};
 //!
-//! # async fn example() -> Result<(), construct_obfs4::Error> {
+//! # async fn example() -> Result<(), construct_ice::Error> {
 //! let config = ClientConfig::from_bridge_cert("base64_bridge_cert_here")?;
 //! let mut stream = Obfs4Stream::connect("relay.example.com:443", config).await?;
 //! // stream implements AsyncRead + AsyncWrite — pass to tonic/hyper
@@ -27,9 +27,9 @@
 //!
 //! ### Server
 //! ```rust,no_run
-//! use construct_obfs4::{ServerConfig, Obfs4Listener};
+//! use construct_ice::{ServerConfig, Obfs4Listener};
 //!
-//! # async fn example() -> Result<(), construct_obfs4::Error> {
+//! # async fn example() -> Result<(), construct_ice::Error> {
 //! let config = ServerConfig::generate();
 //! let listener = Obfs4Listener::bind("0.0.0.0:443", config).await?;
 //! while let Ok((stream, addr)) = listener.accept().await {

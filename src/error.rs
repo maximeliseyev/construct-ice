@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// All errors produced by construct-obfs4.
+/// All errors produced by construct-ice.
 #[derive(Debug, Error)]
 pub enum Error {
     // ── Handshake ───────────────────────────────────────────────────────────

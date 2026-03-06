@@ -1,6 +1,6 @@
 //! End-to-end tests: full client ↔ server over localhost TCP.
 
-use construct_obfs4::{ClientConfig, Obfs4Listener, Obfs4Stream, ServerConfig};
+use construct_ice::{ClientConfig, Obfs4Listener, Obfs4Stream, ServerConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Helper: find a free TCP port.

@@ -1,4 +1,4 @@
-# construct-obfs4
+# construct-ice
 
 obfs4 pluggable transport implementation in Rust for Construct messenger.
 

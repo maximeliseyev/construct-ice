@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use bytes::BytesMut;
-use construct_obfs4::framing::encoder::FrameEncoder;
+use construct_ice::framing::encoder::FrameEncoder;
 
 fn bench_frame_encode(c: &mut Criterion) {
     let key = [0u8; 32];
