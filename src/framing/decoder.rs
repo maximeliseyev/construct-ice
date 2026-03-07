@@ -4,16 +4,15 @@
 
 use bytes::{Buf, BytesMut};
 use crypto_secretbox::{
-    XSalsa20Poly1305, KeyInit,
+    KeyInit, XSalsa20Poly1305,
     aead::{AeadInPlace, generic_array::GenericArray},
 };
 
-use crate::{Error, Result};
 use super::{
-    FRAME_HEADER_LEN, MAX_FRAME_LENGTH, SECRETBOX_NONCE_LEN, SECRETBOX_TAG_LEN,
-    PacketType,
+    FRAME_HEADER_LEN, MAX_FRAME_LENGTH, PacketType, SECRETBOX_NONCE_LEN, SECRETBOX_TAG_LEN,
     length_dist::LengthObfuscator,
 };
+use crate::{Error, Result};
 
 /// Decoded frame content.
 pub enum DecodedFrame {
@@ -55,11 +54,16 @@ impl FrameDecoder {
 
     /// Build the 24-byte nonce: prefix[16] || counter[8] (big-endian).
     fn next_nonce(&mut self) -> [u8; SECRETBOX_NONCE_LEN] {
-        assert!(self.nonce_counter > 0, "nonce counter overflow — connection must be reset");
+        assert!(
+            self.nonce_counter > 0,
+            "nonce counter overflow — connection must be reset"
+        );
         let mut nonce = [0u8; SECRETBOX_NONCE_LEN];
         nonce[..16].copy_from_slice(&self.nonce_prefix);
         nonce[16..].copy_from_slice(&self.nonce_counter.to_be_bytes());
-        self.nonce_counter = self.nonce_counter.checked_add(1)
+        self.nonce_counter = self
+            .nonce_counter
+            .checked_add(1)
             .expect("nonce counter overflow — connection must be reset");
         nonce
     }

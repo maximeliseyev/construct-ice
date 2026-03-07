@@ -15,14 +15,13 @@ use crate::{
     Error, Result,
     crypto::{
         elligator2,
-        keypair::{EphemeralKeypair, StaticKeypair},
         kdf::SessionKeys,
+        keypair::{EphemeralKeypair, StaticKeypair},
         ntor,
     },
     handshake::{
-        AUTH_LEN, MAC_LEN, MARK_LEN, MAX_HANDSHAKE_LENGTH,
-        REPR_LEN, SERVER_MAX_PAD, SERVER_MIN_PAD,
-        HandshakeResult,
+        AUTH_LEN, HandshakeResult, MAC_LEN, MARK_LEN, MAX_HANDSHAKE_LENGTH, REPR_LEN,
+        SERVER_MAX_PAD, SERVER_MIN_PAD,
     },
     replay_filter::ReplayFilter,
 };

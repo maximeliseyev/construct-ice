@@ -24,14 +24,13 @@ use crate::{
     Error, Result,
     crypto::{
         elligator2,
-        keypair::{EphemeralKeypair, NodeId},
         kdf::{SessionKeys, handshake_hmac_key},
+        keypair::{EphemeralKeypair, NodeId},
         ntor,
     },
     handshake::{
-        AUTH_LEN, CLIENT_MAX_PAD, CLIENT_MIN_PAD, MAC_LEN, MARK_LEN,
+        AUTH_LEN, CLIENT_MAX_PAD, CLIENT_MIN_PAD, HandshakeResult, MAC_LEN, MARK_LEN,
         MAX_HANDSHAKE_LENGTH, REPR_LEN, SERVER_HANDSHAKE_LEN,
-        HandshakeResult,
     },
 };
 
@@ -64,7 +63,8 @@ where
     let mark = hmac_128(&hmac_key, &epk.representative);
 
     // 3. Build random padding P_C
-    let pad_len = CLIENT_MIN_PAD + ((rng.next_u32() as usize) % (CLIENT_MAX_PAD - CLIENT_MIN_PAD + 1));
+    let pad_len =
+        CLIENT_MIN_PAD + ((rng.next_u32() as usize) % (CLIENT_MAX_PAD - CLIENT_MIN_PAD + 1));
     let mut padding = vec![0u8; pad_len];
     rng.fill_bytes(&mut padding);
 
@@ -153,12 +153,7 @@ where
     // 7. Decode Y from Y' and complete ntor handshake
     let server_epk_point = elligator2::pubkey_from_representative(&server_repr);
 
-    let ntor_result = ntor::client_ntor(
-        &epk,
-        &server_point,
-        node_id,
-        &server_epk_point,
-    );
+    let ntor_result = ntor::client_ntor(&epk, &server_point, node_id, &server_epk_point);
 
     // 8. Verify AUTH
     if ntor_result.auth.ct_eq(&server_auth).unwrap_u8() != 1 {
@@ -198,11 +193,7 @@ fn find_mark(data: &[u8], mark: &[u8; MARK_LEN]) -> Option<usize> {
 }
 
 /// Verify MAC with clock skew tolerance: try E-1, E, E+1.
-fn verify_mac_with_skew(
-    hmac_key: &[u8],
-    prefix: &[u8],
-    received_mac: &[u8; MAC_LEN],
-) -> bool {
+fn verify_mac_with_skew(hmac_key: &[u8], prefix: &[u8], received_mac: &[u8; MAC_LEN]) -> bool {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

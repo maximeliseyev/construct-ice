@@ -6,7 +6,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::args().nth(1).unwrap_or_else(|| "0.0.0.0:54321".to_string());
+    let addr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "0.0.0.0:54321".to_string());
     let config = ServerConfig::generate();
 
     println!("obfs4 server starting on {addr}");
@@ -27,7 +29,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("Received {} bytes, echoing back", n);
                         let _ = stream.write_all(&buf[..n]).await;
                     }
-                    Err(e) => { eprintln!("Read error: {e}"); break; }
+                    Err(e) => {
+                        eprintln!("Read error: {e}");
+                        break;
+                    }
                 }
             }
         });

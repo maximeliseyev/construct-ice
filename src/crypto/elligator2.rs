@@ -11,8 +11,8 @@
 //! - Spec: <https://elligator.cr.yp.to/elligator-20130828.pdf>
 //! - obfs4 usage: <https://gitlab.com/yawning/obfs4/-/blob/master/doc/obfs4-spec.txt>
 
-use curve25519_elligator2::elligator2::Randomized;
 use curve25519_elligator2::elligator2::MapToPointVariant;
+use curve25519_elligator2::elligator2::Randomized;
 use curve25519_elligator2::montgomery::MontgomeryPoint;
 use rand::{CryptoRng, RngCore};
 
@@ -29,10 +29,7 @@ use rand::{CryptoRng, RngCore};
 ///
 /// The `tweak` byte controls the high bits of the representative for extra
 /// randomization (any random byte is fine).
-pub fn representative_from_privkey_tweaked(
-    privkey: &[u8; 32],
-    tweak: u8,
-) -> Option<[u8; 32]> {
+pub fn representative_from_privkey_tweaked(privkey: &[u8; 32], tweak: u8) -> Option<[u8; 32]> {
     Randomized::to_representative(privkey, tweak).into()
 }
 
@@ -80,8 +77,11 @@ mod tests {
                 let dh_from_decoded = decoded.mul_clamped(peer);
                 let standard_pub = MontgomeryPoint::mul_base_clamped(secret);
                 let dh_from_standard = standard_pub.mul_clamped(peer);
-                assert_eq!(dh_from_decoded.to_bytes(), dh_from_standard.to_bytes(),
-                    "DH mismatch: dirty and standard pubkeys must agree on DH");
+                assert_eq!(
+                    dh_from_decoded.to_bytes(),
+                    dh_from_standard.to_bytes(),
+                    "DH mismatch: dirty and standard pubkeys must agree on DH"
+                );
                 found += 1;
             }
         }
@@ -106,7 +106,7 @@ mod go_reference_tests {
     fn hex_to_32(s: &str) -> [u8; 32] {
         let mut out = [0u8; 32];
         for i in 0..32 {
-            out[i] = u8::from_str_radix(&s[2*i..2*i+2], 16).unwrap();
+            out[i] = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap();
         }
         out
     }
@@ -189,7 +189,8 @@ mod go_reference_tests {
             let repr = representative_from_privkey_tweaked(&privkey, 0);
             assert!(repr.is_some(), "vector {i}: should be representable");
             assert_eq!(
-                repr.unwrap(), expected_repr,
+                repr.unwrap(),
+                expected_repr,
                 "vector {i}: representative mismatch"
             );
         }
@@ -203,7 +204,8 @@ mod go_reference_tests {
 
             let recovered = pubkey_from_representative(&repr);
             assert_eq!(
-                recovered.to_bytes(), expected_pub,
+                recovered.to_bytes(),
+                expected_pub,
                 "vector {i}: pubkey_from_representative mismatch\n  expected: {pub_hex}\n  got:      {:?}",
                 hex::encode(recovered.to_bytes())
             );
@@ -220,11 +222,16 @@ mod go_reference_tests {
 
             // Recover pubkey from representative, do DH with fixed peer
             let recovered_pub = pubkey_from_representative(&repr);
-            assert_eq!(recovered_pub.to_bytes(), expected_pub, "vector {i}: pubkey mismatch");
+            assert_eq!(
+                recovered_pub.to_bytes(),
+                expected_pub,
+                "vector {i}: pubkey mismatch"
+            );
 
             let shared = recovered_pub.mul_clamped(peer);
             assert_eq!(
-                shared.to_bytes(), expected_shared,
+                shared.to_bytes(),
+                expected_shared,
                 "vector {i}: DH shared secret mismatch"
             );
         }
@@ -249,11 +256,19 @@ mod go_reference_tests {
 
             // Step 2: representative -> pubkey (must match Go's dirty pubkey)
             let pub_point = pubkey_from_representative(&repr);
-            assert_eq!(pub_point.to_bytes(), expected_pub, "vector {i}: pubkey mismatch");
+            assert_eq!(
+                pub_point.to_bytes(),
+                expected_pub,
+                "vector {i}: pubkey mismatch"
+            );
 
             // Step 3: DH with pubkey (must match Go's shared secret)
             let shared = pub_point.mul_clamped(peer);
-            assert_eq!(shared.to_bytes(), expected_shared, "vector {i}: DH mismatch");
+            assert_eq!(
+                shared.to_bytes(),
+                expected_shared,
+                "vector {i}: DH mismatch"
+            );
         }
     }
 }

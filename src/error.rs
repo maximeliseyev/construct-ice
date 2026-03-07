@@ -4,7 +4,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     // ── Handshake ───────────────────────────────────────────────────────────
-
     /// The handshake did not complete within the allowed time.
     #[error("handshake timeout")]
     HandshakeTimeout,
@@ -38,13 +37,11 @@ pub enum Error {
     InvalidBridgeLine(String),
 
     // ── Elligator2 ──────────────────────────────────────────────────────────
-
     /// The Curve25519 point has no Elligator2 representative (~50% of keys).
     #[error("point has no Elligator2 representative (retry required)")]
     NoElligatorRepresentative,
 
     // ── Framing ─────────────────────────────────────────────────────────────
-
     /// Frame decryption / MAC verification failed — data may have been tampered with.
     #[error("frame MAC verification failed — possible tampering")]
     FrameMacMismatch,
@@ -63,13 +60,11 @@ pub enum Error {
     UnexpectedEof,
 
     // ── Key derivation ───────────────────────────────────────────────────────
-
     /// HKDF expansion failed (should never happen with valid inputs).
     #[error("HKDF expand failed")]
     KdfError,
 
     // ── I/O ─────────────────────────────────────────────────────────────────
-
     /// Underlying I/O error from the TCP stream.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

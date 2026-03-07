@@ -54,7 +54,8 @@ impl SessionKeys {
         let hk = Hkdf::<Sha256>::new(Some(NTOR_KDF_SALT), key_seed);
 
         let mut okm = [0u8; 144];
-        hk.expand(NTOR_KDF_INFO, &mut okm).map_err(|_| Error::KdfError)?;
+        hk.expand(NTOR_KDF_INFO, &mut okm)
+            .map_err(|_| Error::KdfError)?;
 
         Ok(SessionKeys {
             s2c_key: okm[0..32].try_into().unwrap(),
@@ -107,7 +108,9 @@ mod tests {
     fn go_reference_kdf() {
         fn h(s: &str) -> [u8; 32] {
             let mut out = [0u8; 32];
-            for i in 0..32 { out[i] = u8::from_str_radix(&s[2*i..2*i+2], 16).unwrap(); }
+            for i in 0..32 {
+                out[i] = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap();
+            }
             out
         }
 
@@ -120,11 +123,15 @@ mod tests {
         //   28d8f6cbc46db496f3534f1d12a42da8a7e75e1684a21c187d25b17d7c046f24a
         //   b5e835a51d2bcb31c4a90b45e0b64
         // (Parsed from the Go HKDF output, 144 bytes)
-        assert_eq!(hex::encode(keys.s2c_key),
+        assert_eq!(
+            hex::encode(keys.s2c_key),
             "ba1486f5a74835b1047cd2bcc36e5b37ef5bf5235f6dc08e274d6e5adaa71bfc",
-            "s2c_key mismatch");
-        assert_eq!(hex::encode(keys.s2c_nonce_prefix),
+            "s2c_key mismatch"
+        );
+        assert_eq!(
+            hex::encode(keys.s2c_nonce_prefix),
             "99740014a3c3943a89716ba70b08ae11",
-            "s2c_nonce_prefix mismatch");
+            "s2c_nonce_prefix mismatch"
+        );
     }
 }

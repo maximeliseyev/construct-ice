@@ -57,7 +57,9 @@ impl EphemeralKeypair {
 
             let tweak = elligator2::random_tweak(rng);
 
-            if let Some(representative) = elligator2::representative_from_privkey_tweaked(&secret, tweak) {
+            if let Some(representative) =
+                elligator2::representative_from_privkey_tweaked(&secret, tweak)
+            {
                 // Derive public key from representative to guarantee it matches
                 // what peers will recover. The dirty scalar mult adds a low-order
                 // point that from_representative accounts for.
@@ -88,13 +90,21 @@ impl StaticKeypair {
         let mut node_id = [0u8; 20];
         rng.fill_bytes(&mut node_id);
 
-        StaticKeypair { public, secret, node_id }
+        StaticKeypair {
+            public,
+            secret,
+            node_id,
+        }
     }
 
     /// Load keypair from raw secret bytes and node ID.
     pub fn from_secret(secret: [u8; 32], node_id: NodeId) -> Self {
         let public = MontgomeryPoint::mul_base_clamped(secret);
-        StaticKeypair { public, secret, node_id }
+        StaticKeypair {
+            public,
+            secret,
+            node_id,
+        }
     }
 
     /// Perform X25519 DH with a peer's public key using the static secret.
@@ -122,7 +132,7 @@ impl StaticKeypair {
     pub fn bridge_cert(&self) -> String {
         use base64::Engine;
         let mut raw = Vec::with_capacity(52);
-        raw.extend_from_slice(&self.node_id);      // nodeID first — Go order
+        raw.extend_from_slice(&self.node_id); // nodeID first — Go order
         raw.extend_from_slice(self.public.as_bytes());
         // Strip trailing '=' padding to match Go's certSuffix trimming
         base64::engine::general_purpose::STANDARD
@@ -147,9 +157,10 @@ impl StaticKeypair {
             .decode(&padded)
             .map_err(|e| crate::Error::InvalidServerPublicKey(e.to_string()))?;
         if bytes.len() != 52 {
-            return Err(crate::Error::InvalidServerPublicKey(
-                format!("expected 52 bytes, got {}", bytes.len()),
-            ));
+            return Err(crate::Error::InvalidServerPublicKey(format!(
+                "expected 52 bytes, got {}",
+                bytes.len()
+            )));
         }
         // nodeID first (bytes 0..20), then pubKey (bytes 20..52)
         let mut node_id = [0u8; 20];

@@ -9,16 +9,15 @@
 
 use bytes::{BufMut, BytesMut};
 use crypto_secretbox::{
-    XSalsa20Poly1305, KeyInit,
+    KeyInit, XSalsa20Poly1305,
     aead::{AeadInPlace, generic_array::GenericArray},
 };
 
-use crate::Result;
 use super::{
-    FRAME_HEADER_LEN, MAX_FRAME_LENGTH, MAX_FRAME_PAYLOAD,
-    SECRETBOX_NONCE_LEN, SECRETBOX_TAG_LEN, PacketType,
-    length_dist::LengthObfuscator,
+    FRAME_HEADER_LEN, MAX_FRAME_LENGTH, MAX_FRAME_PAYLOAD, PacketType, SECRETBOX_NONCE_LEN,
+    SECRETBOX_TAG_LEN, length_dist::LengthObfuscator,
 };
+use crate::Result;
 
 /// Encodes plaintext application data into obfs4 frames.
 pub struct FrameEncoder {
@@ -52,11 +51,16 @@ impl FrameEncoder {
 
     /// Build the 24-byte nonce: prefix[16] || counter[8] (big-endian).
     fn next_nonce(&mut self) -> [u8; SECRETBOX_NONCE_LEN] {
-        assert!(self.nonce_counter > 0, "nonce counter overflow — connection must be reset");
+        assert!(
+            self.nonce_counter > 0,
+            "nonce counter overflow — connection must be reset"
+        );
         let mut nonce = [0u8; SECRETBOX_NONCE_LEN];
         nonce[..16].copy_from_slice(&self.nonce_prefix);
         nonce[16..].copy_from_slice(&self.nonce_counter.to_be_bytes());
-        self.nonce_counter = self.nonce_counter.checked_add(1)
+        self.nonce_counter = self
+            .nonce_counter
+            .checked_add(1)
             .expect("nonce counter overflow — connection must be reset");
         nonce
     }
@@ -103,7 +107,8 @@ impl FrameEncoder {
         // Encrypt in-place and get tag
         let nonce = self.next_nonce();
         let nonce_ga = GenericArray::from_slice(&nonce);
-        let tag = self.cipher
+        let tag = self
+            .cipher
             .encrypt_in_place_detached(nonce_ga, b"", &mut plaintext)
             .expect("encryption should not fail");
 

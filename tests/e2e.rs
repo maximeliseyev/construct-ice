@@ -107,7 +107,9 @@ async fn large_payload_multi_frame() {
         while received.len() < payload_clone.len() {
             let mut buf = [0u8; 4096];
             let n = stream.read(&mut buf).await.unwrap();
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             received.extend_from_slice(&buf[..n]);
         }
         // Echo it all back

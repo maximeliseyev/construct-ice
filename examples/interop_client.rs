@@ -6,7 +6,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:54321".to_string());
+    let addr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:54321".to_string());
     let cert = std::env::args().nth(2).unwrap_or_else(|| {
         eprintln!("Usage: interop_client <addr> <bridge_cert_base64>");
         std::process::exit(1);
