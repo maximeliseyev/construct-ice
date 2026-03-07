@@ -15,7 +15,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use pin_project_lite::pin_project;
-use rand::{rngs::SmallRng, SeedableRng};
+use rand::{SeedableRng, rngs::SmallRng};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
@@ -51,7 +51,11 @@ impl ClientConfig {
     /// Sets `iat_mode = IatMode::None`.
     pub fn from_bridge_cert(cert: &str) -> Result<Self> {
         let (server_pubkey, node_id) = StaticKeypair::parse_bridge_cert(cert)?;
-        Ok(ClientConfig { server_pubkey, node_id, iat_mode: IatMode::None })
+        Ok(ClientConfig {
+            server_pubkey,
+            node_id,
+            iat_mode: IatMode::None,
+        })
     }
 
     /// Parse config from a bridge line fragment: `cert=<cert> iat-mode=<n>`.
@@ -68,14 +72,23 @@ impl ClientConfig {
                 iat_mode = v.parse()?;
             }
         }
-        let cert = cert.ok_or_else(|| crate::Error::InvalidBridgeLine("missing cert in bridge line".into()))?;
+        let cert = cert
+            .ok_or_else(|| crate::Error::InvalidBridgeLine("missing cert in bridge line".into()))?;
         let (server_pubkey, node_id) = StaticKeypair::parse_bridge_cert(cert)?;
-        Ok(ClientConfig { server_pubkey, node_id, iat_mode })
+        Ok(ClientConfig {
+            server_pubkey,
+            node_id,
+            iat_mode,
+        })
     }
 
     /// Create config directly from raw bytes.
     pub fn new(server_pubkey: [u8; 32], node_id: NodeId) -> Self {
-        ClientConfig { server_pubkey, node_id, iat_mode: IatMode::None }
+        ClientConfig {
+            server_pubkey,
+            node_id,
+            iat_mode: IatMode::None,
+        }
     }
 
     /// Create config with explicit IAT mode.
@@ -105,7 +118,10 @@ impl ServerConfig {
 
     /// Create from an existing static keypair.
     pub fn from_keypair(keypair: StaticKeypair) -> Self {
-        ServerConfig { keypair, iat_mode: IatMode::None }
+        ServerConfig {
+            keypair,
+            iat_mode: IatMode::None,
+        }
     }
 
     /// Set the IAT mode.
@@ -123,11 +139,44 @@ impl ServerConfig {
     ///
     /// Clients pass this to [`ClientConfig::from_bridge_line`].
     pub fn bridge_line(&self) -> String {
-        format!("cert={} iat-mode={}", self.keypair.bridge_cert(), self.iat_mode.as_u8())
+        format!(
+            "cert={} iat-mode={}",
+            self.keypair.bridge_cert(),
+            self.iat_mode.as_u8()
+        )
+    }
+
+    /// Serialize the server identity to 52 raw bytes: `secret(32) || node_id(20)`.
+    ///
+    /// Store base64-encoded output in `ICE_SERVER_KEY` to persist the server
+    /// identity across restarts — otherwise every restart invalidates client bridge certs.
+    pub fn to_bytes(&self) -> [u8; 52] {
+        let mut out = [0u8; 52];
+        out[..32].copy_from_slice(&self.keypair.secret);
+        out[32..].copy_from_slice(&self.keypair.node_id);
+        out
+    }
+
+    /// Restore a server config from 52 bytes produced by [`ServerConfig::to_bytes`].
+    ///
+    /// The `iat_mode` defaults to `IatMode::None`; call `.with_iat()` to override.
+    pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
+        if bytes.len() != 52 {
+            return Err(crate::Error::InvalidBridgeLine(format!(
+                "server key must be 52 bytes, got {}",
+                bytes.len()
+            )));
+        }
+        let mut secret = [0u8; 32];
+        let mut node_id = [0u8; 20];
+        secret.copy_from_slice(&bytes[..32]);
+        node_id.copy_from_slice(&bytes[32..]);
+        Ok(ServerConfig {
+            keypair: StaticKeypair::from_secret(secret, node_id),
+            iat_mode: IatMode::None,
+        })
     }
 }
-
-// ── Obfs4Stream ──────────────────────────────────────────────────────────────
 
 pin_project! {
     /// An obfs4-wrapped stream implementing `AsyncRead + AsyncWrite`.
@@ -170,7 +219,8 @@ impl Obfs4Stream {
             &config.server_pubkey,
             &config.node_id,
             &mut rand::rngs::OsRng,
-        ).await?;
+        )
+        .await?;
         let keys = result.session_keys;
 
         Ok(Obfs4Stream {
@@ -240,7 +290,7 @@ impl AsyncRead for Obfs4Stream {
                             return Poll::Ready(Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 e.to_string(),
-                            )))
+                            )));
                         }
                     }
                 }
@@ -386,7 +436,8 @@ impl Obfs4Listener {
             &self.config.keypair,
             &mut rand::rngs::OsRng,
             &self.replay_filter,
-        ).await?;
+        )
+        .await?;
         let keys = result.session_keys;
 
         let stream = Obfs4Stream {
