@@ -10,6 +10,7 @@ keywords = ["obfs4", "pluggable-transport", "censorship-resistance", "tor"]
 [lib]
 name = "construct_ice"
 path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
 
 # Integration test binary (against Go reference server)
 [[example]]
@@ -39,7 +40,7 @@ crypto_secretbox = "0.1"
 base64 = "0.22"
 
 # Async I/O
-tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "rt-multi-thread", "macros", "sync", "time"] }
 bytes = "1.6"
 pin-project-lite = "0.2"
 
@@ -53,6 +54,8 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 
 [features]
 default = []
+# Enable C FFI proxy (ice_proxy_start/stop/is_running) — required for iOS
+ffi = []
 # Enable tonic/hyper transport wrappers (optional — pulls in heavy deps)
 tonic-transport = ["dep:hyper", "dep:http"]
 

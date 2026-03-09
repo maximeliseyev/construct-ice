@@ -20,8 +20,8 @@ use crate::{
         ntor,
     },
     handshake::{
-        AUTH_LEN, HandshakeResult, MAC_LEN, MARK_LEN, MAX_HANDSHAKE_LENGTH, REPR_LEN,
-        SERVER_MAX_PAD, SERVER_MIN_PAD,
+        AUTH_LEN, CLIENT_MIN_PAD, HandshakeResult, MAC_LEN, MARK_LEN, MAX_HANDSHAKE_LENGTH,
+        REPR_LEN, SERVER_MAX_PAD, SERVER_MIN_PAD,
     },
     replay_filter::ReplayFilter,
 };
@@ -84,6 +84,15 @@ where
 
     // 4. Read MAC_C which follows the mark
     let mac_start = mark_pos + MARK_LEN;
+
+    // 4b. Verify minimum client padding (anti-probing: real clients always
+    // send at least CLIENT_MIN_PAD bytes of padding between X' and M_C).
+    let pad_len = mark_pos - REPR_LEN;
+    if pad_len < CLIENT_MIN_PAD {
+        random_delay(rng).await;
+        return Err(Error::HandshakeMacMismatch);
+    }
+
     while buf_len < mac_start + MAC_LEN {
         let n = stream.read(&mut buf[buf_len..]).await?;
         if n == 0 {
@@ -154,6 +163,15 @@ where
     response.extend_from_slice(&padding);
     response.extend_from_slice(&server_mark);
     response.extend_from_slice(&server_mac);
+
+    // 10b. Timing jitter: delay 1-50ms before responding.
+    // Mimics TLS certificate lookup latency so DPI cannot distinguish
+    // "instant obfs4 response" from a real HTTPS server.
+    {
+        let jitter_ms = 1 + (rng.next_u32() % 50) as u64;
+        tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
+    }
+
     stream.write_all(&response).await?;
     stream.flush().await?;
 
@@ -172,9 +190,18 @@ fn truncate_128(full: &[u8]) -> [u8; 16] {
 }
 
 /// Scan `data` for the 16-byte `mark`, return offset if found.
+///
+/// Uses constant-time comparison for each window AND a full scan
+/// (no early exit) so that the total execution time does not reveal
+/// the mark position (i.e. the padding length).
 fn find_mark(data: &[u8], mark: &[u8; MARK_LEN]) -> Option<usize> {
-    data.windows(MARK_LEN)
-        .position(|w| w.ct_eq(mark).unwrap_u8() == 1)
+    let mut found: Option<usize> = None;
+    for (i, w) in data.windows(MARK_LEN).enumerate() {
+        if w.ct_eq(mark).unwrap_u8() == 1 {
+            found = found.or(Some(i));
+        }
+    }
+    found
 }
 
 /// Verify MAC with clock skew tolerance: try E-1, E, E+1.

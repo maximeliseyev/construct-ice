@@ -9,6 +9,8 @@ pub mod decoder;
 pub mod encoder;
 pub mod length_dist;
 
+pub use encoder::PaddingStrategy;
+
 /// Maximum allowed frame length (secretbox portion), per obfs4 spec §5.
 pub const MAX_FRAME_LENGTH: usize = 1448;
 

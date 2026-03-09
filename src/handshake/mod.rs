@@ -5,9 +5,15 @@
 pub mod client;
 pub mod server;
 
+use std::time::Duration;
+
 use crate::crypto::kdf::SessionKeys;
 
 // ── Handshake Constants (obfs4 spec §4) ─────────────────────────────────────
+
+/// Default handshake timeout. Prevents DPI probers from holding connections
+/// open indefinitely and distinguishing the server from normal HTTPS.
+pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Maximum total size of a handshake request or response, including padding.
 pub const MAX_HANDSHAKE_LENGTH: usize = 8192;

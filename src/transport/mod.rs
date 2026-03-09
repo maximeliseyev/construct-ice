@@ -26,17 +26,19 @@ use crate::{
     Result,
     crypto::keypair::{NodeId, StaticKeypair},
     framing::{
+        PaddingStrategy,
         decoder::{DecodedFrame, FrameDecoder},
         encoder::FrameEncoder,
     },
-    handshake::{client::client_handshake, server::server_handshake},
-    iat::{IatMode, sample_delay, split_for_iat},
+    handshake::{DEFAULT_HANDSHAKE_TIMEOUT, client::client_handshake, server::server_handshake},
+    iat::{IatMode, sample_delay_with_max, split_for_iat},
     replay_filter::ReplayFilter,
 };
 
 // ── Client config ────────────────────────────────────────────────────────────
 
 /// Configuration for the obfs4 client.
+#[derive(Clone)]
 pub struct ClientConfig {
     /// Server's static public key B (32 bytes, from bridge cert).
     pub server_pubkey: [u8; 32],
@@ -44,6 +46,16 @@ pub struct ClientConfig {
     pub node_id: NodeId,
     /// IAT obfuscation mode (default: `None`).
     pub iat_mode: IatMode,
+    /// Maximum time allowed for the handshake to complete.
+    /// Prevents DPI probers from holding connections open indefinitely.
+    pub handshake_timeout: Duration,
+    /// Padding strategy for data frames.
+    /// Random padding breaks correlation between payload and wire frame sizes.
+    pub padding: PaddingStrategy,
+    /// Maximum IAT delay per chunk.
+    /// Default 10ms (Go-compatible). Set higher (e.g. 100-500ms) for stronger
+    /// timing obfuscation that mimics real user think-time patterns.
+    pub max_iat_delay: Duration,
 }
 
 impl ClientConfig {
@@ -55,6 +67,9 @@ impl ClientConfig {
             server_pubkey,
             node_id,
             iat_mode: IatMode::None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            padding: PaddingStrategy::default(),
+            max_iat_delay: crate::iat::MAX_IAT_DELAY,
         })
     }
 
@@ -79,6 +94,9 @@ impl ClientConfig {
             server_pubkey,
             node_id,
             iat_mode,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            padding: PaddingStrategy::default(),
+            max_iat_delay: crate::iat::MAX_IAT_DELAY,
         })
     }
 
@@ -88,12 +106,27 @@ impl ClientConfig {
             server_pubkey,
             node_id,
             iat_mode: IatMode::None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            padding: PaddingStrategy::default(),
+            max_iat_delay: crate::iat::MAX_IAT_DELAY,
         }
     }
 
     /// Create config with explicit IAT mode.
     pub fn with_iat(mut self, iat_mode: IatMode) -> Self {
         self.iat_mode = iat_mode;
+        self
+    }
+
+    /// Set the padding strategy for data frames.
+    pub fn with_padding(mut self, padding: PaddingStrategy) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    /// Set the maximum IAT delay per chunk.
+    pub fn with_max_iat_delay(mut self, delay: Duration) -> Self {
+        self.max_iat_delay = delay;
         self
     }
 }
@@ -105,6 +138,12 @@ pub struct ServerConfig {
     pub(crate) keypair: StaticKeypair,
     /// IAT obfuscation mode advertised in bridge lines (default: `None`).
     pub iat_mode: IatMode,
+    /// Maximum time allowed for the handshake to complete.
+    pub handshake_timeout: Duration,
+    /// Padding strategy for data frames.
+    pub padding: PaddingStrategy,
+    /// Maximum IAT delay per chunk.
+    pub max_iat_delay: Duration,
 }
 
 impl ServerConfig {
@@ -113,6 +152,9 @@ impl ServerConfig {
         ServerConfig {
             keypair: StaticKeypair::generate(&mut rand::rngs::OsRng),
             iat_mode: IatMode::None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            padding: PaddingStrategy::default(),
+            max_iat_delay: crate::iat::MAX_IAT_DELAY,
         }
     }
 
@@ -121,12 +163,27 @@ impl ServerConfig {
         ServerConfig {
             keypair,
             iat_mode: IatMode::None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            padding: PaddingStrategy::default(),
+            max_iat_delay: crate::iat::MAX_IAT_DELAY,
         }
     }
 
     /// Set the IAT mode.
     pub fn with_iat(mut self, iat_mode: IatMode) -> Self {
         self.iat_mode = iat_mode;
+        self
+    }
+
+    /// Set the padding strategy for data frames.
+    pub fn with_padding(mut self, padding: PaddingStrategy) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    /// Set the maximum IAT delay per chunk.
+    pub fn with_max_iat_delay(mut self, delay: Duration) -> Self {
+        self.max_iat_delay = delay;
         self
     }
 
@@ -147,9 +204,6 @@ impl ServerConfig {
     }
 
     /// Serialize the server identity to 52 raw bytes: `secret(32) || node_id(20)`.
-    ///
-    /// Store base64-encoded output in `ICE_SERVER_KEY` to persist the server
-    /// identity across restarts — otherwise every restart invalidates client bridge certs.
     pub fn to_bytes(&self) -> [u8; 52] {
         let mut out = [0u8; 52];
         out[..32].copy_from_slice(&self.keypair.secret);
@@ -158,8 +212,6 @@ impl ServerConfig {
     }
 
     /// Restore a server config from 52 bytes produced by [`ServerConfig::to_bytes`].
-    ///
-    /// The `iat_mode` defaults to `IatMode::None`; call `.with_iat()` to override.
     pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
         if bytes.len() != 52 {
             return Err(crate::Error::InvalidBridgeLine(format!(
@@ -174,6 +226,9 @@ impl ServerConfig {
         Ok(ServerConfig {
             keypair: StaticKeypair::from_secret(secret, node_id),
             iat_mode: IatMode::None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            padding: PaddingStrategy::default(),
+            max_iat_delay: crate::iat::MAX_IAT_DELAY,
         })
     }
 }
@@ -198,6 +253,7 @@ pin_project! {
         read_buf: BytesMut,
         write_buf: BytesMut,
         iat_mode: IatMode,
+        max_iat_delay: Duration,
         iat_chunks: VecDeque<Bytes>,
         iat_sleep: Option<Pin<Box<Sleep>>>,
         iat_rng: SmallRng,
@@ -214,13 +270,17 @@ impl Obfs4Stream {
     /// Perform client handshake over an existing TCP stream.
     pub async fn client_handshake(tcp: TcpStream, config: ClientConfig) -> Result<Self> {
         let iat_mode = config.iat_mode;
-        let (tcp, result) = client_handshake(
+        let padding = config.padding;
+        let max_iat_delay = config.max_iat_delay;
+        let timeout = config.handshake_timeout;
+        let (tcp, result) = tokio::time::timeout(timeout, client_handshake(
             tcp,
             &config.server_pubkey,
             &config.node_id,
             &mut rand::rngs::OsRng,
-        )
-        .await?;
+        ))
+        .await
+        .map_err(|_| crate::Error::HandshakeTimeout)??;
         let keys = result.session_keys;
 
         Ok(Obfs4Stream {
@@ -230,7 +290,7 @@ impl Obfs4Stream {
                 &keys.c2s_nonce_prefix,
                 &keys.c2s_siphash_key,
                 &keys.c2s_siphash_iv,
-            ),
+            ).with_padding(padding),
             decoder: FrameDecoder::new(
                 &keys.s2c_key,
                 &keys.s2c_nonce_prefix,
@@ -240,6 +300,7 @@ impl Obfs4Stream {
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
             iat_mode,
+            max_iat_delay,
             iat_chunks: VecDeque::new(),
             iat_sleep: None,
             iat_rng: SmallRng::from_entropy(),
@@ -253,7 +314,7 @@ impl AsyncRead for Obfs4Stream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let this = self.project();
+        let mut this = self.project();
 
         // Return buffered decoded data first
         if !this.read_buf.is_empty() {
@@ -262,44 +323,47 @@ impl AsyncRead for Obfs4Stream {
             return Poll::Ready(Ok(()));
         }
 
-        // Read raw bytes from TCP
-        let mut tmp = [0u8; 4096];
-        let mut raw = ReadBuf::new(&mut tmp);
-        match this.inner.poll_read(cx, &mut raw) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Ready(Ok(())) => {
-                let filled = raw.filled();
-                if filled.is_empty() {
-                    return Poll::Ready(Ok(())); // EOF
-                }
+        // Keep reading from TCP until we can decode at least one frame or EOF/error
+        loop {
+            let mut tmp = [0u8; 4096];
+            let mut raw = ReadBuf::new(&mut tmp);
+            match this.inner.as_mut().poll_read(cx, &mut raw) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => {
+                    let filled = raw.filled();
+                    if filled.is_empty() {
+                        return Poll::Ready(Ok(())); // true EOF
+                    }
 
-                this.decoder.feed(filled);
+                    this.decoder.feed(filled);
 
-                loop {
-                    match this.decoder.decode_frame() {
-                        Ok(Some(DecodedFrame::Payload(payload))) => {
-                            this.read_buf.extend_from_slice(&payload);
-                        }
-                        Ok(Some(DecodedFrame::PrngSeed(_seed))) => {
-                            // TODO: update protocol polymorphism PRNG
-                            continue;
-                        }
-                        Ok(None) => break,
-                        Err(e) => {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                e.to_string(),
-                            )));
+                    loop {
+                        match this.decoder.decode_frame() {
+                            Ok(Some(DecodedFrame::Payload(payload))) => {
+                                this.read_buf.extend_from_slice(&payload);
+                            }
+                            Ok(Some(DecodedFrame::PrngSeed(_seed))) => {
+                                // TODO: update protocol polymorphism PRNG
+                                continue;
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                return Poll::Ready(Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    e.to_string(),
+                                )));
+                            }
                         }
                     }
-                }
 
-                let n = buf.remaining().min(this.read_buf.len());
-                if n > 0 {
-                    buf.put_slice(&this.read_buf.split_to(n));
+                    if !this.read_buf.is_empty() {
+                        let n = buf.remaining().min(this.read_buf.len());
+                        buf.put_slice(&this.read_buf.split_to(n));
+                        return Poll::Ready(Ok(()));
+                    }
+                    // No complete frame yet — loop to read more from TCP
                 }
-                Poll::Ready(Ok(()))
             }
         }
     }
@@ -371,7 +435,7 @@ impl AsyncWrite for Obfs4Stream {
                         this.iat_chunks.pop_front();
                         // Schedule delay before the next chunk.
                         if !this.iat_chunks.is_empty() {
-                            let delay: Duration = sample_delay(this.iat_rng);
+                            let delay: Duration = sample_delay_with_max(this.iat_rng, *this.max_iat_delay);
                             *this.iat_sleep = Some(Box::pin(tokio::time::sleep(delay)));
                         }
                     }
@@ -431,13 +495,15 @@ impl Obfs4Listener {
     /// (active probing defence) are silently rejected with a random delay.
     pub async fn accept(&self) -> Result<(Obfs4Stream, std::net::SocketAddr)> {
         let (tcp, addr) = self.inner.accept().await?;
-        let (tcp, result) = server_handshake(
+        let timeout = self.config.handshake_timeout;
+        let (tcp, result) = tokio::time::timeout(timeout, server_handshake(
             tcp,
             &self.config.keypair,
             &mut rand::rngs::OsRng,
             &self.replay_filter,
-        )
-        .await?;
+        ))
+        .await
+        .map_err(|_| crate::Error::HandshakeTimeout)??;
         let keys = result.session_keys;
 
         let stream = Obfs4Stream {
@@ -447,7 +513,7 @@ impl Obfs4Listener {
                 &keys.s2c_nonce_prefix,
                 &keys.s2c_siphash_key,
                 &keys.s2c_siphash_iv,
-            ),
+            ).with_padding(self.config.padding),
             decoder: FrameDecoder::new(
                 &keys.c2s_key,
                 &keys.c2s_nonce_prefix,
@@ -457,6 +523,7 @@ impl Obfs4Listener {
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
             iat_mode: self.config.iat_mode,
+            max_iat_delay: self.config.max_iat_delay,
             iat_chunks: VecDeque::new(),
             iat_sleep: None,
             iat_rng: SmallRng::from_entropy(),

@@ -187,9 +187,18 @@ fn epoch_hours_str() -> String {
 }
 
 /// Scan `data` for the 16-byte `mark`, return offset if found.
+///
+/// Uses constant-time comparison for each window AND a full scan
+/// (no early exit) so that the total execution time does not reveal
+/// the mark position (i.e. the padding length).
 fn find_mark(data: &[u8], mark: &[u8; MARK_LEN]) -> Option<usize> {
-    data.windows(MARK_LEN)
-        .position(|w| w.ct_eq(mark).unwrap_u8() == 1)
+    let mut found: Option<usize> = None;
+    for (i, w) in data.windows(MARK_LEN).enumerate() {
+        if w.ct_eq(mark).unwrap_u8() == 1 {
+            found = found.or(Some(i));
+        }
+    }
+    found
 }
 
 /// Verify MAC with clock skew tolerance: try E-1, E, E+1.

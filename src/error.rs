@@ -64,6 +64,13 @@ pub enum Error {
     #[error("HKDF expand failed")]
     KdfError,
 
+    // ── Nonce ────────────────────────────────────────────────────────────────
+    /// The nonce counter has been exhausted — connection must be reset.
+    /// This would require sending ~2^64 frames (~18 exabytes), so it should
+    /// never happen in practice. Returned instead of panicking.
+    #[error("nonce counter exhausted — connection must be reset")]
+    NonceExhausted,
+
     // ── I/O ─────────────────────────────────────────────────────────────────
     /// Underlying I/O error from the TCP stream.
     #[error("I/O error: {0}")]

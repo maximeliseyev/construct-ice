@@ -62,7 +62,7 @@
 //! # }
 //! ```
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs, clippy::all)]
 
 pub mod crypto;
@@ -72,9 +72,14 @@ pub mod iat;
 pub mod replay_filter;
 pub mod transport;
 
+#[cfg(feature = "ffi")]
+#[allow(unsafe_code)]
+pub mod ffi;
+
 mod error;
 
 pub use error::Error;
+pub use framing::PaddingStrategy;
 pub use iat::IatMode;
 pub use transport::{ClientConfig, Obfs4Listener, Obfs4Stream, ServerConfig};
 

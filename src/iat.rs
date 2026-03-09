@@ -109,8 +109,32 @@ pub fn split_for_iat(framed: &[u8], mode: IatMode, rng: &mut impl Rng) -> Vec<By
 /// Matches the Go formula: `iatDelta = iatDist.Sample() * 100` µs,
 /// with `iatDist` uniform over [0, maxIATDelay].
 pub fn sample_delay(rng: &mut impl Rng) -> Duration {
-    let units: u64 = rng.gen_range(0..=MAX_IAT_UNITS);
-    Duration::from_micros(units * 100)
+    sample_delay_with_max(rng, MAX_IAT_DELAY)
+}
+
+/// Sample a random IAT delay up to the given maximum.
+///
+/// Uses a log-normal-approximated distribution when `max > 10ms`:
+/// most delays are short, but occasional long pauses mimic real
+/// application think-time (e.g. user reading a message).
+pub fn sample_delay_with_max(rng: &mut impl Rng, max: Duration) -> Duration {
+    let max_us = max.as_micros() as u64;
+    if max_us <= 10_000 {
+        // Classic obfs4: uniform in 100µs steps
+        let units = max_us / 100;
+        if units == 0 {
+            return Duration::ZERO;
+        }
+        let u: u64 = rng.gen_range(0..=units);
+        Duration::from_micros(u * 100)
+    } else {
+        // Extended mode: log-normal-ish via squaring a uniform sample.
+        // This concentrates most delays near 0 with a heavy tail up to max,
+        // which resembles real web traffic inter-arrival times.
+        let u: f64 = rng.gen_range(0.0..1.0);
+        let delay_us = (u * u * max_us as f64) as u64;
+        Duration::from_micros(delay_us)
+    }
 }
 
 #[cfg(test)]
