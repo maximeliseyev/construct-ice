@@ -248,8 +248,13 @@ impl ServerConfig {
 pin_project! {
     /// An obfs4-wrapped stream implementing `AsyncRead + AsyncWrite`.
     ///
+    /// The type parameter `S` is the underlying transport stream.
+    /// Use [`Obfs4Stream<TcpStream>`] for plain TCP, or [`Obfs4Stream<TlsStream<TcpStream>>`]
+    /// when wrapping obfs4 inside TLS for DPI evasion (TSPU/GFW).
+    ///
     /// Obtained by calling [`Obfs4Stream::connect`] / [`Obfs4Stream::client_handshake`]
-    /// or from [`Obfs4Listener::accept`].
+    /// (TCP), [`Obfs4Stream::client_handshake_stream`] (any stream),
+    /// or from [`Obfs4Listener::accept`] / [`Obfs4Listener::accept_stream`].
     ///
     /// # IAT mode
     ///
@@ -257,9 +262,9 @@ pin_project! {
     /// with random inter-chunk delays (0–10 ms) to resist traffic-timing analysis.
     /// The delays are applied during [`AsyncWrite::poll_flush`]; callers that
     /// always flush (e.g. tonic, hyper) get IAT behaviour automatically.
-    pub struct Obfs4Stream {
+    pub struct Obfs4Stream<S> {
         #[pin]
-        inner: TcpStream,
+        inner: S,
         encoder: FrameEncoder,
         decoder: FrameDecoder,
         read_buf: BytesMut,
@@ -272,7 +277,7 @@ pin_project! {
     }
 }
 
-impl Obfs4Stream {
+impl Obfs4Stream<TcpStream> {
     /// Connect to an obfs4 server: performs TCP connect + handshake.
     pub async fn connect(addr: &str, config: ClientConfig) -> Result<Self> {
         let tcp = TcpStream::connect(addr).await?;
@@ -281,12 +286,25 @@ impl Obfs4Stream {
 
     /// Perform client handshake over an existing TCP stream.
     pub async fn client_handshake(tcp: TcpStream, config: ClientConfig) -> Result<Self> {
+        Self::client_handshake_stream(tcp, config).await
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Obfs4Stream<S> {
+    /// Perform client handshake over any async stream (TCP, TLS, or other).
+    ///
+    /// Use this when obfs4 runs inside another transport layer, e.g. TLS:
+    /// ```rust,ignore
+    /// let tls_stream = tls_connector.connect(domain, tcp).await?;
+    /// let ice_stream = Obfs4Stream::client_handshake_stream(tls_stream, config).await?;
+    /// ```
+    pub async fn client_handshake_stream(stream: S, config: ClientConfig) -> Result<Self> {
         let iat_mode = config.iat_mode;
         let padding = config.padding;
         let max_iat_delay = config.max_iat_delay;
         let timeout = config.handshake_timeout;
-        let (tcp, result) = tokio::time::timeout(timeout, client_handshake(
-            tcp,
+        let (stream, result) = tokio::time::timeout(timeout, client_handshake(
+            stream,
             &config.server_pubkey,
             &config.node_id,
             &mut rand::rngs::OsRng,
@@ -321,7 +339,7 @@ impl Obfs4Stream {
         }
 
         Ok(Obfs4Stream {
-            inner: tcp,
+            inner: stream,
             encoder: FrameEncoder::new(
                 &keys.c2s_key,
                 &keys.c2s_nonce_prefix,
@@ -363,7 +381,7 @@ impl Obfs4Stream {
     }
 }
 
-impl AsyncRead for Obfs4Stream {
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for Obfs4Stream<S> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -425,7 +443,7 @@ impl AsyncRead for Obfs4Stream {
     }
 }
 
-impl AsyncWrite for Obfs4Stream {
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for Obfs4Stream<S> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -545,15 +563,31 @@ impl Obfs4Listener {
         })
     }
 
-    /// Accept the next incoming obfs4 connection.
+    /// Accept the next incoming obfs4 connection over TCP.
     ///
     /// Performs TCP accept + obfs4 server handshake. Replayed handshakes
     /// (active probing defence) are silently rejected with a random delay.
-    pub async fn accept(&self) -> Result<(Obfs4Stream, std::net::SocketAddr)> {
+    pub async fn accept(&self) -> Result<(Obfs4Stream<TcpStream>, std::net::SocketAddr)> {
         let (tcp, addr) = self.inner.accept().await?;
+        let stream = self.accept_stream(tcp).await?;
+        Ok((stream, addr))
+    }
+
+    /// Perform obfs4 server handshake over an already-accepted stream.
+    ///
+    /// Use this when the connection arrives pre-wrapped in another transport,
+    /// e.g. TLS terminated by the gateway before obfs4:
+    /// ```rust,ignore
+    /// let (tls_stream, _addr) = tls_acceptor.accept(tcp).await?;
+    /// let ice_stream = listener.accept_stream(tls_stream).await?;
+    /// ```
+    pub async fn accept_stream<S: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        stream: S,
+    ) -> Result<Obfs4Stream<S>> {
         let timeout = self.config.handshake_timeout;
-        let (tcp, result) = tokio::time::timeout(timeout, server_handshake(
-            tcp,
+        let (stream, result) = tokio::time::timeout(timeout, server_handshake(
+            stream,
             &self.config.keypair,
             &mut rand::rngs::OsRng,
             &self.replay_filter,
@@ -562,8 +596,8 @@ impl Obfs4Listener {
         .map_err(|_| crate::Error::HandshakeTimeout)??;
         let keys = result.session_keys;
 
-        let mut stream = Obfs4Stream {
-            inner: tcp,
+        let mut ice_stream = Obfs4Stream {
+            inner: stream,
             encoder: FrameEncoder::new(
                 &keys.s2c_key,
                 &keys.s2c_nonce_prefix,
@@ -590,15 +624,15 @@ impl Obfs4Listener {
         let mut seed = [0u8; 24];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
         let mut seed_frame = BytesMut::new();
-        stream.encoder.encode_prng_seed(&seed, &mut seed_frame)?;
+        ice_stream.encoder.encode_prng_seed(&seed, &mut seed_frame)?;
         {
             use tokio::io::AsyncWriteExt;
-            stream.inner.write_all(&seed_frame).await?;
-            stream.inner.flush().await?;
+            use std::pin::Pin;
+            Pin::new(&mut ice_stream.inner).write_all(&seed_frame).await?;
+            Pin::new(&mut ice_stream.inner).flush().await?;
         }
-        // Apply seed to this side's encoder for padding modulation
-        stream.iat_rng = SmallRng::from_seed(prng_seed_to_rng_seed(&seed));
+        ice_stream.iat_rng = SmallRng::from_seed(prng_seed_to_rng_seed(&seed));
 
-        Ok((stream, addr))
+        Ok(ice_stream)
     }
 }
