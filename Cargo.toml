@@ -1,6 +1,6 @@
 [package]
 name = "construct-ice"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "ICE (Intrusion Countermeasures Electronics) — traffic obfuscation transport for Construct messenger"
 license = "MIT"
@@ -56,6 +56,11 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 default = []
 # Enable C FFI proxy (ice_proxy_start/stop/is_running) — required for iOS
 ffi = []
+# Enable TLS wrapping (outer TLS before obfs4) — required for DPI evasion
+# Uses the platform native TLS stack (SecureTransport on Apple, SChannel on Windows)
+tls = ["dep:native-tls", "dep:tokio-native-tls"]
+# ffi + tls combined (used by iOS build)
+ffi-tls = ["ffi", "tls"]
 # Enable tonic/hyper transport wrappers (optional — pulls in heavy deps)
 tonic-transport = ["dep:hyper", "dep:http"]
 
@@ -66,6 +71,14 @@ optional = true
 
 [dependencies.http]
 version = "1"
+optional = true
+
+[dependencies.native-tls]
+version = "0.2"
+optional = true
+
+[dependencies.tokio-native-tls]
+version = "0.3"
 optional = true
 
 [profile.release]
