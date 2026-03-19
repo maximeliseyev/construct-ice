@@ -4,6 +4,9 @@
 //! presenting a standard `AsyncRead + AsyncWrite` interface to callers.
 //! This means they're directly compatible with tonic and hyper.
 
+/// Cover traffic helpers (TLS/HTTP probing → proxy to upstream).
+pub mod cover;
+
 use std::{
     collections::VecDeque,
     io,
@@ -602,6 +605,36 @@ impl Obfs4Listener {
         let (tcp, addr) = self.inner.accept().await?;
         let stream = self.accept_stream(tcp).await?;
         Ok((stream, addr))
+    }
+
+    /// Accept one TCP connection and decide whether to do obfs4 or "cover" proxying.
+    ///
+    /// If the first bytes look like TLS/HTTP, returns `MixedAccept::Proxied` with a task handle
+    /// that proxies the connection to `cover.upstream_addr`. Otherwise, performs the obfs4
+    /// server handshake and returns `MixedAccept::Obfs4`.
+    ///
+    /// This is an opt-in active-probing hardening strategy for deployments that share a port
+    /// with legitimate-looking services (commonly `:443`).
+    pub async fn accept_obfs4_or_proxy(
+        &self,
+        cover: cover::CoverProxyConfig,
+    ) -> Result<(cover::MixedAccept, std::net::SocketAddr)> {
+        let (tcp, addr) = self.inner.accept().await?;
+        match cover::decide_cover(&tcp, &cover).await {
+            Ok(cover::CoverDecision::ProxyToUpstream) => {
+                let handle = tokio::spawn(cover::proxy_to_upstream(tcp, cover));
+                Ok((cover::MixedAccept::Proxied(handle), addr))
+            }
+            Ok(cover::CoverDecision::TryObfs4) => {
+                let stream = self.accept_stream(tcp).await?;
+                Ok((cover::MixedAccept::Obfs4(stream), addr))
+            }
+            // If peeking fails, fall back to obfs4 behavior (don't leak errors to probers).
+            Err(_) => {
+                let stream = self.accept_stream(tcp).await?;
+                Ok((cover::MixedAccept::Obfs4(stream), addr))
+            }
+        }
     }
 
     /// Perform obfs4 server handshake over an already-accepted stream.
