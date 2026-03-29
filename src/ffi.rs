@@ -155,21 +155,42 @@ pub extern "C" fn ice_proxy_stop() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-/// Returns 1 if the proxy is currently running, 0 otherwise.
+/// Returns 1 if the proxy is currently running (either plain-obfs4 or TLS-wrapped), 0 otherwise.
 pub extern "C" fn ice_proxy_is_running() -> i32 {
-    match PROXY.lock() {
-        Ok(guard) => i32::from(guard.is_some()),
-        Err(_) => 0,
+    // Plain-obfs4 mode
+    if let Ok(guard) = PROXY.lock()
+        && guard.is_some()
+    {
+        return 1;
     }
+    // TLS-wrapped mode (used on iOS for DPI evasion)
+    #[cfg(feature = "tls")]
+    if let Ok(guard) = PROXY_TLS.lock()
+        && guard.is_some()
+    {
+        return 1;
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
 /// Returns the local TCP port the proxy is listening on, or 0 if not running.
+/// Checks both plain-obfs4 (PROXY) and TLS-wrapped (PROXY_TLS) instances.
 pub extern "C" fn ice_proxy_port() -> u16 {
-    match PROXY.lock() {
-        Ok(guard) => guard.as_ref().map(|h| h.port).unwrap_or(0),
-        Err(_) => 0,
+    // Plain-obfs4 mode
+    if let Ok(guard) = PROXY.lock()
+        && let Some(h) = guard.as_ref()
+    {
+        return h.port;
     }
+    // TLS-wrapped mode (used on iOS for DPI evasion)
+    #[cfg(feature = "tls")]
+    if let Ok(guard) = PROXY_TLS.lock()
+        && let Some(h) = guard.as_ref()
+    {
+        return h.port;
+    }
+    0
 }
 
 async fn proxy_loop(
