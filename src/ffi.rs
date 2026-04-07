@@ -175,17 +175,45 @@ pub extern "C" fn ice_proxy_is_running() -> i32 {
 
 #[unsafe(no_mangle)]
 /// Returns the local TCP port the proxy is listening on, or 0 if not running.
-/// Checks both plain-obfs4 (PROXY) and TLS-wrapped (PROXY_TLS) instances.
+/// Prefers TLS-wrapped mode (DPI-resistant) over plain-obfs4.
+/// When both are running simultaneously (happy-eyeballs dual-proxy mode),
+/// returns the TLS port — use `ice_proxy_port_plain()` to get the plain port.
 pub extern "C" fn ice_proxy_port() -> u16 {
-    // Plain-obfs4 mode
+    // TLS-wrapped mode (preferred — DPI-resistant, used on port 443)
+    #[cfg(feature = "tls")]
+    if let Ok(guard) = PROXY_TLS.lock()
+        && let Some(h) = guard.as_ref()
+    {
+        return h.port;
+    }
+    // Plain-obfs4 mode (fallback relay, e.g. MSK relay on port 9443)
     if let Ok(guard) = PROXY.lock()
         && let Some(h) = guard.as_ref()
     {
         return h.port;
     }
-    // TLS-wrapped mode (used on iOS for DPI evasion)
-    #[cfg(feature = "tls")]
+    0
+}
+
+#[unsafe(no_mangle)]
+/// Returns the port of the TLS-wrapped proxy specifically, or 0 if not running.
+/// Use this when both plain and TLS proxies are running simultaneously (dual-proxy
+/// happy-eyeballs mode) to get each port independently.
+#[cfg(feature = "tls")]
+pub extern "C" fn ice_proxy_port_tls() -> u16 {
     if let Ok(guard) = PROXY_TLS.lock()
+        && let Some(h) = guard.as_ref()
+    {
+        return h.port;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+/// Returns the port of the plain-obfs4 proxy specifically, or 0 if not running.
+/// In dual-proxy mode, this is the secondary relay (e.g. MSK TCP relay).
+pub extern "C" fn ice_proxy_port_plain() -> u16 {
+    if let Ok(guard) = PROXY.lock()
         && let Some(h) = guard.as_ref()
     {
         return h.port;
