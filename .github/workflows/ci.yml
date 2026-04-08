@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── 1. Lint + Tests (Linux) ───────────────────────────────────────────────
+  test:
+    name: Lint + Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + fmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (ffi-tls)
+        run: cargo clippy --all-targets --features ffi-tls -- -D warnings
+
+      - name: Clippy (tonic-transport)
+        run: cargo clippy --all-targets --features tonic-transport -- -D warnings
+
+      - name: Run tests (default)
+        run: cargo test
+
+      - name: Run tests (tonic-transport)
+        run: cargo test --features tonic-transport
+
+  # ── 2. macOS FFI build (matches iOS platform SDK) ────────────────────────
+  build-macos:
+    name: macOS FFI Build
+    runs-on: macos-14
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      # Validate FFI+TLS compiles for host (macOS) and iOS targets.
+      # cargo check validates the dependency graph without linking — fast.
+      - name: Check ffi-tls (macOS host)
+        run: cargo check --features ffi-tls
+
+      - name: Check ffi-tls (iOS device)
+        run: cargo check --features ffi-tls --target aarch64-apple-ios
+
+      - name: Check ffi-tls (iOS simulator)
+        run: cargo check --features ffi-tls --target aarch64-apple-ios-sim
+
+      - name: Check tonic-transport (macOS host)
+        run: cargo check --features tonic-transport
