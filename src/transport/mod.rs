@@ -202,6 +202,12 @@ impl ServerConfig {
         self
     }
 
+    /// Set the handshake timeout.
+    pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = timeout;
+        self
+    }
+
     /// Set the maximum IAT delay per chunk.
     pub fn with_max_iat_delay(mut self, delay: Duration) -> Self {
         self.max_iat_delay = delay;
