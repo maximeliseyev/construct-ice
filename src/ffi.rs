@@ -503,14 +503,18 @@ async fn handle_connection_tls(
     // Build rustls connector with SPKI pinning + SNI control.
     // sni = ""   → IP-based ServerName, no SNI extension in ClientHello (Path 1).
     // sni = name → sends as SNI; cert verified by SPKI pin, not CA chain (Path 2).
-    let (connector, server_name) =
-        match crate::tls_pinned::build_connector(&tls_server_name, &tls_spki_hex, &relay_addr) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("ice-tls: connector build failed: {e}");
-                return;
-            }
-        };
+    let (connector, server_name) = match crate::tls_pinned::build_connector(
+        &tls_server_name,
+        &tls_spki_hex,
+        &relay_addr,
+        config.tls_profile,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("ice-tls: connector build failed: {e}");
+            return;
+        }
+    };
 
     // Attempt the obfs4-over-TLS connection up to 2 times before giving up.
     // The server may momentarily reject a handshake (e.g. during restart or
@@ -558,5 +562,110 @@ async fn handle_connection_tls(
                 }
             }
         }
+    }
+}
+
+// ── uTLS profiled proxy ───────────────────────────────────────────────────────
+
+/// Start a TLS-over-obfs4 proxy with a specific browser TLS fingerprint profile.
+///
+/// Identical to `ice_proxy_start_tls_pinned` but accepts a `tls_profile` string
+/// that controls cipher suite ordering and ALPN:
+///
+/// - `"chrome131"` or `"chrome"` — Chrome 131 ordering
+/// - `"firefox128"` or `"firefox"` — Firefox 128 ordering
+/// - `""` or `"rustls"` — rustls defaults (same as `ice_proxy_start_tls_pinned`)
+///
+/// # Safety
+/// All pointer parameters must be valid null-terminated C strings or null.
+#[cfg(all(feature = "ffi", feature = "tls"))]
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn ice_proxy_start_tls_profiled(
+    bridge_line: *const c_char,
+    relay_addr: *const c_char,
+    tls_sni: *const c_char,
+    spki_hex: *const c_char,
+    tls_profile: *const c_char,
+    port_out: *mut u16,
+) -> i32 {
+    let bridge_line = unsafe {
+        match bridge_line
+            .as_ref()
+            .and_then(|p| CStr::from_ptr(p).to_str().ok())
+        {
+            Some(s) => s.to_owned(),
+            None => return -1,
+        }
+    };
+    let relay_addr = unsafe {
+        match relay_addr
+            .as_ref()
+            .and_then(|p| CStr::from_ptr(p).to_str().ok())
+        {
+            Some(s) => s.to_owned(),
+            None => return -1,
+        }
+    };
+    let tls_sni = unsafe {
+        tls_sni
+            .as_ref()
+            .and_then(|p| CStr::from_ptr(p).to_str().ok())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let spki_hex = unsafe {
+        spki_hex
+            .as_ref()
+            .and_then(|p| CStr::from_ptr(p).to_str().ok())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let profile_str = unsafe {
+        tls_profile
+            .as_ref()
+            .and_then(|p| CStr::from_ptr(p).to_str().ok())
+            .unwrap_or("")
+            .to_owned()
+    };
+
+    let mut config = match ClientConfig::from_bridge_line(&bridge_line) {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
+    config.tls_profile = crate::tls_fingerprint::TlsProfile::from_name(&profile_str);
+
+    let rt = get_runtime();
+    let result: Result<u16, ()> = rt.block_on(async {
+        {
+            let guard = PROXY_TLS.lock().map_err(|_| ())?;
+            if guard.is_some() {
+                return Err(()); // already running
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|_| ())?;
+        let port = listener.local_addr().map_err(|_| ())?.port();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        rt.spawn(proxy_loop_tls(
+            listener,
+            relay_addr,
+            tls_sni,
+            spki_hex,
+            config,
+            shutdown_rx,
+        ));
+        let mut guard = PROXY_TLS.lock().map_err(|_| ())?;
+        *guard = Some(ProxyHandle { port, shutdown_tx });
+        Ok(port)
+    });
+
+    match result {
+        Ok(p) => {
+            if !port_out.is_null() {
+                unsafe { *port_out = p };
+            }
+            0
+        }
+        Err(()) => -1,
     }
 }

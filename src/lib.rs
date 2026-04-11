@@ -79,12 +79,18 @@ pub mod ffi;
 #[cfg(feature = "tls")]
 pub(crate) mod tls_pinned;
 
+#[cfg(feature = "tls")]
+pub mod tls_fingerprint;
+
 mod error;
 
 pub use error::Error;
 pub use framing::PaddingStrategy;
 pub use iat::IatMode;
 pub use transport::{ClientConfig, Obfs4Listener, Obfs4Stream, ServerConfig};
+
+#[cfg(feature = "tls")]
+pub use tls_fingerprint::TlsProfile;
 
 #[cfg(feature = "tonic-transport")]
 pub use transport::tonic_compat::{HyperObfs4Io, Obfs4Channel};

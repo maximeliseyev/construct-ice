@@ -77,6 +77,12 @@ pub struct ClientConfig {
     /// Default 10ms (Go-compatible). Set higher (e.g. 100-500ms) for stronger
     /// timing obfuscation that mimics real user think-time patterns.
     pub max_iat_delay: Duration,
+    /// TLS fingerprint profile used by [`Obfs4Stream::connect_tls`].
+    ///
+    /// Defaults to [`TlsProfile::Rustls`]. Set to [`TlsProfile::Chrome131`]
+    /// or [`TlsProfile::Firefox128`] to mimic browser cipher/ALPN ordering.
+    #[cfg(feature = "tls")]
+    pub tls_profile: crate::tls_fingerprint::TlsProfile,
 }
 
 impl ClientConfig {
@@ -91,6 +97,8 @@ impl ClientConfig {
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             padding: PaddingStrategy::default(),
             max_iat_delay: crate::iat::MAX_IAT_DELAY,
+            #[cfg(feature = "tls")]
+            tls_profile: crate::tls_fingerprint::TlsProfile::default(),
         })
     }
 
@@ -118,6 +126,8 @@ impl ClientConfig {
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             padding: PaddingStrategy::default(),
             max_iat_delay: crate::iat::MAX_IAT_DELAY,
+            #[cfg(feature = "tls")]
+            tls_profile: crate::tls_fingerprint::TlsProfile::default(),
         })
     }
 
@@ -130,6 +140,8 @@ impl ClientConfig {
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             padding: PaddingStrategy::default(),
             max_iat_delay: crate::iat::MAX_IAT_DELAY,
+            #[cfg(feature = "tls")]
+            tls_profile: crate::tls_fingerprint::TlsProfile::default(),
         }
     }
 
@@ -148,6 +160,17 @@ impl ClientConfig {
     /// Set the maximum IAT delay per chunk.
     pub fn with_max_iat_delay(mut self, delay: Duration) -> Self {
         self.max_iat_delay = delay;
+        self
+    }
+
+    /// Set the TLS fingerprint profile for [`Obfs4Stream::connect_tls`].
+    ///
+    /// Use [`TlsProfile::Chrome131`] or [`TlsProfile::Firefox128`] to mimic
+    /// browser cipher suite ordering. Has no effect if the `tls` feature is
+    /// not enabled.
+    #[cfg(feature = "tls")]
+    pub fn with_tls_profile(mut self, profile: crate::tls_fingerprint::TlsProfile) -> Self {
+        self.tls_profile = profile;
         self
     }
 }
@@ -325,8 +348,9 @@ impl Obfs4Stream<tokio_rustls::client::TlsStream<TcpStream>> {
         spki_hex: &str,
         config: ClientConfig,
     ) -> Result<Self> {
+        let profile = config.tls_profile;
         let (connector, server_name) =
-            crate::tls_pinned::build_connector(tls_server_name, spki_hex, relay_addr)
+            crate::tls_pinned::build_connector(tls_server_name, spki_hex, relay_addr, profile)
                 .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
 
         let tcp = TcpStream::connect(relay_addr).await?;

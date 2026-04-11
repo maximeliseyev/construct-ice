@@ -61,6 +61,9 @@ ffi = []
 # Enable TLS wrapping (outer TLS before obfs4) — required for DPI evasion.
 # Uses rustls with a custom SPKI-pinning verifier for full SNI and cert control.
 tls = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-pki-types", "dep:x509-cert"]
+# uTLS browser fingerprint mimicry (Chrome 131, Firefox 128, Safari 18 profiles).
+# Implies tls. Adds md-5 for JA3 hash computation.
+utls = ["tls", "dep:md-5"]
 # ffi + tls combined (used by iOS build)
 ffi-tls = ["ffi", "tls"]
 # Enable tonic/hyper transport wrappers (optional — pulls in heavy deps)
@@ -98,6 +101,10 @@ optional = true
 version = "0.2"
 default-features = false
 features = ["std"]
+optional = true
+
+[dependencies.md-5]
+version = "0.10"
 optional = true
 
 [profile.release]

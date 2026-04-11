@@ -24,11 +24,7 @@ use rustls::{
 };
 use tokio_rustls::TlsConnector;
 
-/// Ensure the rustls ring CryptoProvider is installed exactly once.
-/// Must be called before any TLS operation.
-fn ensure_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
+use crate::tls_fingerprint::TlsProfile;
 
 /// Build a `TlsConnector` + `ServerName` for the DPI-evasion TLS handshake.
 ///
@@ -37,17 +33,28 @@ fn ensure_crypto_provider() {
 /// - `spki_hex`: lowercase hex SHA-256 of DER SubjectPublicKeyInfo. Empty →
 ///   accept any cert (no pinning).
 /// - `relay_addr`: `"ip:port"` string — used to extract the IP when `sni` is empty.
+/// - `profile`: TLS fingerprint profile. Controls cipher suite ordering and ALPN
+///   to mimic a specific browser ClientHello.
 pub fn build_connector(
     sni: &str,
     spki_hex: &str,
     relay_addr: &str,
+    profile: TlsProfile,
 ) -> Result<(TlsConnector, ServerName<'static>), String> {
-    ensure_crypto_provider();
+    let provider = profile.crypto_provider();
     let verifier = PinnedSpkiVerifier::new(spki_hex)?;
-    let config = ClientConfig::builder()
+
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
+
+    let alpn = profile.alpn();
+    if !alpn.is_empty() {
+        config.alpn_protocols = alpn;
+    }
 
     let server_name = resolve_server_name(sni, relay_addr)?;
     Ok((TlsConnector::from(Arc::new(config)), server_name))
