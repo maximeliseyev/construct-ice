@@ -251,3 +251,38 @@ async fn random_delay<R: RngCore>(rng: &mut R) {
     let ms = (rng.next_u32() % 5000) as u64;
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
 }
+
+/// Synchronous portion of the server-side handshake: scan arbitrary bytes
+/// for the client mark, verify MAC structure, and validate padding length.
+///
+/// Returns `Ok(mark_pos)` if the message is structurally valid (mark found,
+/// padding within limits). The HMAC MAC value itself is intentionally **not**
+/// checked here — callers should not have access to the server's identity key.
+///
+/// This is `pub` for fuzz testing only and is **not** part of the public API.
+#[doc(hidden)]
+pub fn scan_client_handshake_bytes(data: &[u8], hmac_key: &[u8]) -> Result<usize> {
+    if data.len() < REPR_LEN + MARK_LEN + MAC_LEN {
+        return Err(Error::HandshakeMacMismatch);
+    }
+
+    let client_repr: [u8; REPR_LEN] = data[..REPR_LEN].try_into().unwrap();
+    let expected_mark = hmac_128(hmac_key, &client_repr);
+
+    let after_repr = &data[REPR_LEN..];
+    let mark_pos = find_mark(after_repr, &expected_mark)
+        .map(|p| REPR_LEN + p)
+        .ok_or(Error::HandshakeMacMismatch)?;
+
+    let pad_len = mark_pos - REPR_LEN;
+    if pad_len < MARK_LEN {
+        return Err(Error::HandshakeMacMismatch);
+    }
+
+    let mac_end = mark_pos + MARK_LEN + MAC_LEN;
+    if data.len() < mac_end {
+        return Err(Error::HandshakeMacMismatch);
+    }
+
+    Ok(mark_pos)
+}

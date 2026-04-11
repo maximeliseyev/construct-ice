@@ -98,6 +98,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "construct-ice",
+ "curve25519-elligator2",
  "libfuzzer-sys",
 ]
 

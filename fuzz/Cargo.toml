@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+curve25519-elligator2 = { version = "0.1.0-alpha.2", features = ["elligator2"] }
 
 [dependencies.construct-ice]
 path = ".."
@@ -37,6 +38,21 @@ doc = false
 [[bin]]
 name = "fuzz_replay_filter"
 path = "fuzz_targets/fuzz_replay_filter.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_elligator2"
+path = "fuzz_targets/fuzz_elligator2.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_bridge_cert"
+path = "fuzz_targets/fuzz_bridge_cert.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_handshake_scan"
+path = "fuzz_targets/fuzz_handshake_scan.rs"
 doc = false
 
 [profile.release]
