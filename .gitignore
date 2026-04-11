@@ -1,4 +1,6 @@
 target/
-fuzz/
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
 .env
 .DS_Store
