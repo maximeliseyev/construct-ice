@@ -526,7 +526,13 @@ async fn handle_connection_tls(
             Ok(t) => t,
             Err(e) => {
                 eprintln!("ice-tls: tcp connect failed (attempt {attempt}): {e}");
-                break; // TCP failure is unlikely to be transient — stop retrying
+                // ECONNREFUSED is often transient (relay restart / rate-limit window).
+                // Retry once with a brief pause; any other error is persistent.
+                if attempt == 0 && e.kind() == std::io::ErrorKind::ConnectionRefused {
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    continue;
+                }
+                break;
             }
         };
 
