@@ -129,7 +129,7 @@ fn try_decode_frame(
 
     match opcode {
         // Continuation (0x0), text (0x1), binary (0x2) — data frames
-        0x00 | 0x01 | 0x02 => {
+        0x00..=0x02 => {
             if masked {
                 let key = [
                     raw[header_end],
@@ -468,7 +468,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WebTunnelServerStream<S> {
         let accept_key = headers
             .lines()
             .find(|l| l.to_lowercase().starts_with("sec-websocket-key:"))
-            .and_then(|l| l.splitn(2, ':').nth(1))
+            .and_then(|l| l.split_once(':').map(|x| x.1))
             .map(|v| v.trim())
             .map(|key| {
                 let mut h = Sha1::new();

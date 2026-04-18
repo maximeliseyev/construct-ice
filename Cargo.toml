@@ -49,6 +49,18 @@ pin-project-lite = "0.2"
 thiserror = "1"
 tonic = { version = "0.14.5", optional = true }
 
+[dependencies.prometheus]
+version = "0.13"
+optional = true
+
+[dependencies.once_cell]
+version = "1"
+optional = true
+
+[dependencies.tracing]
+version = "0.1"
+optional = true
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 hex = "0.4"
@@ -72,7 +84,8 @@ ffi-tls = ["ffi", "tls"]
 webtunnel = ["tls"]
 # ffi + webtunnel combined (used by iOS build for WebTunnel transport)
 ffi-webtunnel = ["ffi", "webtunnel"]
-# Server-side WebTunnel: accept incoming WebSocket upgrades (relay / server use).
+# Enable Prometheus metrics + HTTP /metrics endpoint (for relay nodes)
+metrics = ["dep:prometheus", "dep:once_cell", "dep:tracing"]
 # Implies webtunnel. Adds sha1 for Sec-WebSocket-Accept computation (RFC 6455 §4.2.2).
 server = ["webtunnel", "dep:sha1"]
 # Enable tonic/hyper transport wrappers (optional — pulls in heavy deps)

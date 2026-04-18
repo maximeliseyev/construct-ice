@@ -83,6 +83,9 @@ pub(crate) mod tls_pinned;
 #[cfg(feature = "tls")]
 pub mod tls_fingerprint;
 
+#[cfg(feature = "metrics")]
+pub mod metrics;
+
 mod error;
 
 pub use error::Error;
