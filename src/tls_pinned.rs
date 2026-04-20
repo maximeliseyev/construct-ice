@@ -35,11 +35,14 @@ use crate::tls_fingerprint::TlsProfile;
 /// - `relay_addr`: `"ip:port"` string — used to extract the IP when `sni` is empty.
 /// - `profile`: TLS fingerprint profile. Controls cipher suite ordering and ALPN
 ///   to mimic a specific browser ClientHello.
+/// - `alpn_override`: When `Some`, replaces the profile's ALPN list. Use to restrict
+///   ALPN for transport-specific requirements (e.g. WebSocket requires `http/1.1` only).
 pub fn build_connector(
     sni: &str,
     spki_hex: &str,
     relay_addr: &str,
     profile: TlsProfile,
+    alpn_override: Option<Vec<Vec<u8>>>,
 ) -> Result<(TlsConnector, ServerName<'static>), String> {
     let provider = profile.crypto_provider();
     let verifier = PinnedSpkiVerifier::new(spki_hex)?;
@@ -51,7 +54,7 @@ pub fn build_connector(
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
 
-    let alpn = profile.alpn();
+    let alpn = alpn_override.unwrap_or_else(|| profile.alpn());
     if !alpn.is_empty() {
         config.alpn_protocols = alpn;
     }

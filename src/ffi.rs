@@ -151,6 +151,16 @@ pub extern "C" fn ice_proxy_stop() -> i32 {
         stopped = true;
     }
 
+    // Also stop the WebTunnel proxy — prevents stale handles that would cause
+    // ice_proxy_start_webtunnel to return -1 when rotating to a different relay.
+    #[cfg(feature = "webtunnel")]
+    if let Ok(mut guard) = PROXY_WEBTUNNEL.lock()
+        && let Some(handle) = guard.take()
+    {
+        let _ = handle.shutdown_tx.send(());
+        stopped = true;
+    }
+
     if stopped { 0 } else { -1 }
 }
 
@@ -508,6 +518,7 @@ async fn handle_connection_tls(
         &tls_spki_hex,
         &relay_addr,
         config.tls_profile,
+        None,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -823,6 +834,11 @@ async fn handle_connection_webtunnel(
         &tls_spki_hex,
         &relay_addr,
         crate::tls_fingerprint::TlsProfile::Chrome131,
+        // RFC 6455 WebSocket upgrade requires HTTP/1.1.  Advertising h2 in ALPN
+        // while then sending an HTTP/1.1 Upgrade request is inconsistent and can
+        // be detected by DPI (e.g. ТСПУ).  Real Chrome uses http/1.1-only ALPN
+        // for wss:// connections.
+        Some(vec![b"http/1.1".to_vec()]),
     ) {
         Ok(v) => v,
         Err(e) => {

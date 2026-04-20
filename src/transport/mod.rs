@@ -390,9 +390,14 @@ impl Obfs4Stream<tokio_rustls::client::TlsStream<TcpStream>> {
         config: ClientConfig,
     ) -> Result<Self> {
         let profile = config.tls_profile;
-        let (connector, server_name) =
-            crate::tls_pinned::build_connector(tls_server_name, spki_hex, relay_addr, profile)
-                .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
+        let (connector, server_name) = crate::tls_pinned::build_connector(
+            tls_server_name,
+            spki_hex,
+            relay_addr,
+            profile,
+            None,
+        )
+        .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
 
         let tcp = TcpStream::connect(relay_addr).await?;
         let _ = tcp.set_nodelay(true);
