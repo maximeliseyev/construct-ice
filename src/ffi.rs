@@ -165,7 +165,7 @@ pub extern "C" fn ice_proxy_stop() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-/// Returns 1 if the proxy is currently running (either plain-obfs4 or TLS-wrapped), 0 otherwise.
+/// Returns 1 if the proxy is currently running (plain-obfs4, TLS-wrapped, or WebTunnel), 0 otherwise.
 pub extern "C" fn ice_proxy_is_running() -> i32 {
     // Plain-obfs4 mode
     if let Ok(guard) = PROXY.lock()
@@ -180,18 +180,30 @@ pub extern "C" fn ice_proxy_is_running() -> i32 {
     {
         return 1;
     }
+    // WebTunnel mode (WebSocket-over-TLS, used for CDN fronting)
+    #[cfg(feature = "webtunnel")]
+    if let Ok(guard) = PROXY_WEBTUNNEL.lock()
+        && guard.is_some()
+    {
+        return 1;
+    }
     0
 }
 
 #[unsafe(no_mangle)]
 /// Returns the local TCP port the proxy is listening on, or 0 if not running.
-/// Prefers TLS-wrapped mode (DPI-resistant) over plain-obfs4.
-/// When both are running simultaneously (happy-eyeballs dual-proxy mode),
-/// returns the TLS port — use `ice_proxy_port_plain()` to get the plain port.
+/// Prefers TLS-wrapped and WebTunnel modes (DPI-resistant) over plain-obfs4.
 pub extern "C" fn ice_proxy_port() -> u16 {
     // TLS-wrapped mode (preferred — DPI-resistant, used on port 443)
     #[cfg(feature = "tls")]
     if let Ok(guard) = PROXY_TLS.lock()
+        && let Some(h) = guard.as_ref()
+    {
+        return h.port;
+    }
+    // WebTunnel mode (WebSocket-over-TLS CDN fronting)
+    #[cfg(feature = "webtunnel")]
+    if let Ok(guard) = PROXY_WEBTUNNEL.lock()
         && let Some(h) = guard.as_ref()
     {
         return h.port;
