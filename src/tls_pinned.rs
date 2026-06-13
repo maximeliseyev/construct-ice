@@ -216,9 +216,14 @@ mod live_probe {
             let sni = "front.example.com";
             let spki = "<REDACTED_SPKI>";
 
-            let (connector, server_name) =
-                build_connector(sni, spki, relay, TlsProfile::Chrome131, Some(vec![b"h2".to_vec()]))
-                    .expect("build_connector");
+            let (connector, server_name) = build_connector(
+                sni,
+                spki,
+                relay,
+                TlsProfile::Chrome131,
+                Some(vec![b"h2".to_vec()]),
+            )
+            .expect("build_connector");
             let tcp = TcpStream::connect(relay).await.expect("tcp connect");
             tcp.set_nodelay(true).unwrap();
             match connector.connect(server_name, tcp).await {
@@ -227,7 +232,8 @@ mod live_probe {
                     eprintln!(
                         "HANDSHAKE OK — proto={:?} alpn={:?}",
                         conn.protocol_version(),
-                        conn.alpn_protocol().map(|a| String::from_utf8_lossy(a).to_string())
+                        conn.alpn_protocol()
+                            .map(|a| String::from_utf8_lossy(a).to_string())
                     );
                 }
                 Err(e) => panic!("HANDSHAKE ERR: {e}  (kind={:?})", e.kind()),
