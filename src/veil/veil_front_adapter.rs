@@ -451,15 +451,37 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
+            // Ticket is a probing-resistance secret — never hardcode it. Source order:
+            //   1. VEIL_TEST_TICKET env (override)
+            //   2. the gitignored, server-synced deploy/data/tickets/tickets.json (first entry)
+            // tickets.json is a JSON array of base64 strings; base64 has no '"', so the
+            // first quoted token is the first ticket (no serde_json dep needed).
+            let ticket = std::env::var("VEIL_TEST_TICKET")
+                .ok()
+                .filter(|t| !t.is_empty())
+                .or_else(|| {
+                    std::fs::read_to_string("deploy/data/tickets/tickets.json")
+                        .ok()
+                        .and_then(|s| s.split('"').nth(1).map(str::to_string))
+                        .filter(|t| !t.is_empty())
+                })
+                .unwrap_or_default();
+            if ticket.is_empty() {
+                eprintln!(
+                    "skip: no ticket — set VEIL_TEST_TICKET or populate deploy/data/tickets/tickets.json"
+                );
+                return;
+            }
             let req = ProbeRequest {
-                relay_addr: "front.example.com:443".into(),
+                relay_addr: std::env::var("VEIL_TEST_RELAY")
+                    .unwrap_or_else(|_| "front.example.com:443".into()),
                 bundle: String::new(),
                 tls_sni: "front.example.com".into(),
-                spki_hex: "<REDACTED_SPKI>".into(),
+                spki_hex: std::env::var("VEIL_TEST_SPKI")
+                    .unwrap_or_else(|_| "<REDACTED_SPKI>".into()),
                 host_header: "front.example.com".into(),
                 wt_base_path: "/api/stream".into(),
-                veil_front_ticket_b64:
-                    "o4ojhrsE7oT3b9jVZT7nk8Dp2IWTmPSWBY8D/1V1k1Uoqjm+x7NEcrlu0Lzwnc92PTQtagAAAAA9wVRqAAAAAAE=".into(),
+                veil_front_ticket_b64: ticket,
             };
 
             for i in 1..=3 {
