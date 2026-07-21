@@ -122,7 +122,8 @@ impl VeilCoordinator {
         // a subset (e.g. veil-front-only on `utls`). Without this, the scorer can
         // pick an unregistered method into the top-K — it "immediately fails", the
         // registered method gets starved, no real probe runs, and the FSM dead-ends
-        // in cooldown→Idle (surfaced as the misleading "session was stopped").
+        // in Cooldown (previously slept 30s then returned the misleading
+        // "session was stopped").
         let allowed_methods = {
             let mut bits = allowed_methods.0;
             for m in MethodId::all() {
@@ -140,6 +141,16 @@ impl VeilCoordinator {
             allowed_methods.iter_allowed().collect::<Vec<_>>(),
         );
 
+        // One-shot start for FFI hosts (`veil_start`): run a single probe cycle and
+        // return. Do NOT sleep the internal Cooldown here.
+        //
+        // Why: iOS/Swift already owns backoff (`TransportConfig.veilCooldownDuration`).
+        // Sleeping 30s inside `block_on(veil_start)` (1) doubles cooldown with the
+        // host, (2) freezes the caller's thread for the whole sleep, and under iOS
+        // suspension stretches wall-clock into minutes while the process looks stuck
+        // in `veil-probing` — then surfaces as the misleading "session was stopped"
+        // when CooldownElapsed → Idle. Device heat log 2026-07-21: first start
+        // 15:32→16:15 "session was stopped" after a suspended internal cooldown.
         loop {
             // Build cached score lookup for this iteration.
             let scores_cache = CachedScoreLookup::build(&self.scores, &fingerprint)
@@ -157,6 +168,8 @@ impl VeilCoordinator {
                     fingerprint: fingerprint.clone(),
                     allowed_methods,
                 },
+                // Unreachable for the one-shot path: we return on Cooldown below.
+                // Kept so a future long-lived coordinator loop can re-enable sleep.
                 VeilState::Cooldown { until } => {
                     let remaining = until.saturating_duration_since(now);
                     if !remaining.is_zero() {
@@ -222,6 +235,15 @@ impl VeilCoordinator {
                         latency_ms: latency,
                     });
                 }
+                // All methods failed this cycle. Hand backoff to the host immediately.
+                VeilState::Cooldown { .. } => {
+                    info!(
+                        target: "ice::coordinator",
+                        "all probes failed — returning AllProbesFailed (host owns cooldown)"
+                    );
+                    return Err(CoordinatorError::AllProbesFailed);
+                }
+                // Explicit Stop (or Start that never left Idle). Not a probe failure.
                 VeilState::Idle => {
                     return Err(CoordinatorError::Stopped);
                 }
