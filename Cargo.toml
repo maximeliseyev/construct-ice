@@ -7,15 +7,16 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "3.4.0"
+version = "3.4.1"
 authors = ["Construct Team"]
 edition = "2024"
 rust-version = "1.96"
-license = "MIT"
+license = "MPL-2.0"
 repository = "https://github.com/construct-msg/construct-veil"
 
 [package]
 name = "construct-veil"
+license = "MPL-2.0"
 version.workspace = true
 edition.workspace = true
 description = "VEIL — (Variable Encoded Interface Layer) — traffic obfuscation transport for Construct messenger"

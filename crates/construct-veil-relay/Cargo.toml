@@ -1,5 +1,6 @@
 [package]
 name = "construct-veil-relay"
+license = "MPL-2.0"
 version.workspace = true
 edition.workspace = true
 description = "Veil-front relay — honest-front HTTPS server with session-bound ticket authentication"

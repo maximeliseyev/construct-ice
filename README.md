@@ -280,3 +280,9 @@ cargo test --test '*'
 - [curve25519-elligator2](https://docs.rs/curve25519-elligator2)
 - [veil-front protocol sketch](../construct-docs/raw/02_Core_Crypto/protocols/OBFUSCATION_PROTOCOL_SKETCH_veil-front.md)
 - [veil-front implementation plan](../construct-docs/raw/02_Core_Crypto/protocols/OBFUSCATION_IMPLEMENTATION_PLAN_veil-front.md)
+
+## Trademark
+
+**Konstruct™** / **Конструкт™** and the logo are trademarks of Maxim Eliseyev. The open-source
+license on this code does **not** grant trademark rights — see [TRADEMARK.md](TRADEMARK.md).
+Forks that distribute a modified version must rebrand.

@@ -1,5 +1,6 @@
 [package]
 name = "construct-veil-protocol"
+license = "MPL-2.0"
 version.workspace = true
 edition.workspace = true
 description = "Shared wire protocol types for veil-front: tickets, auth records, frame codec"
