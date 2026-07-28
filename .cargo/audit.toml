@@ -1,0 +1,34 @@
+# cargo-audit configuration
+#
+# Security policy for dependency auditing.
+#
+# NOTE on the ignores below: cargo-audit is NOT feature-aware — it scans
+# Cargo.lock literally, which pins every *optional* transitive dependency edge
+# even when no enabled feature ever compiles it. Advisories listed here are for
+# optional deps present in the lock but absent from our resolved build graph
+# (verified with `cargo tree`). Each ignore documents that verification and the
+# upstream condition under which it should be removed.
+#
+# Kept in sync with construct-core/.cargo/audit.toml — construct-veil is linked
+# into ConstructCore.xcframework, so an advisory dismissed here must be
+# dismissed there for the same reason.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: rsa 0.9.10 — Marvin timing sidechannel (MEDIUM, no fixed
+    # upgrade available). NOT COMPILED: rsa arrives only via `sqlx-mysql`, an
+    # optional sqlx driver. We enable sqlx with the sqlite driver only
+    # (`features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono"]`,
+    # itself gated behind the optional `coordinator` feature); the mysql driver
+    # is never selected.
+    # Verified 2026-07-28: `cargo tree -i rsa --all-features --target all`
+    #   → "nothing to print" (no path even with every feature enabled).
+    # REMOVE THIS IGNORE when: sqlx stops pinning sqlx-mysql in the lock for a
+    # sqlite-only consumer (sqlx feature-resolution fix), or rsa ships a
+    # constant-time fix.
+    # Tracking: decisions/cargo-audit-not-compiled-advisories.md
+    "RUSTSEC-2023-0071",
+]
+
+# Allow informational warnings (unmaintained crates)
+informational_warnings = ["unmaintained"]
