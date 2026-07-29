@@ -66,7 +66,7 @@ cargo build --release --target aarch64-unknown-linux-gnu   # for Raspberry Pi re
 
 All project documentation: `~/Code/construct-docs` (Obsidian vault).
 **Authoritative map + writing rules: `~/Code/construct-docs/AGENTS.md`** (read it before contributing
-docs). The vault is a flat domain-folder structure — there is no `raw/` or `wiki/` anymore.
+docs). The vault is a flat domain-folder structure.
 
 ### Vault layout (top-level domain folders)
 
@@ -90,7 +90,7 @@ After any session involving architectural changes, design decisions, API changes
 1. **Always** create or update `sessions/YYYY-MM-DD-<topic>.md`.
 2. **Always** fill in `# Why` — reasoning, alternatives considered, why rejected. Most important section.
 3. If the decision constrains future work, also create `decisions/<topic>.md`.
-4. Session notes: plain markdown, **no YAML frontmatter, no `[[wikilinks]]`** — olw adds those.
+4. Session notes: plain markdown, no YAML frontmatter; `[[wikilinks]]` to other notes are welcome.
 
 Required note sections: `# Context`, `# What Changed`, `# Why`, `# Intended Outcome`, `# Decisions`, `# Open Questions`
 
