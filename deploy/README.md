@@ -8,7 +8,7 @@ One-VPS deployment of the veil-front relay + cover application via
 
 | Container | What | Host port |
 |---|---|---|
-| `cover` | Node.js example-cover (Диваны и Кресла — custom-furniture workshop landing + live production tracker via SSE). Serves the public site on internal `:8080`, ACME http-01 challenges + `https://` redirect on host `:80`. | `80` |
+| `cover` | Node.js example-cover on internal `:8080` + ACME on host `:80`. **Primary front today:** furniture workshop (`example-cover/` / example-cover). **Second front:** weather cover (`example-weather-cover/` / ExampleWeather) — build a separate image, never re-use the same brand on two hosts. | `80` |
 | `relay` | `construct-veil-relay` Rust binary. Terminates TLS, runs the constant-shape gate, routes valid AUTH to gRPC backend / everything else to `cover:8080`. | `443` |
 | `certbot` | Let's Encrypt cert issuance + renewal via webroot challenge. Invoked manually (bootstrap) and from `cron` (renewal). | — |
 
